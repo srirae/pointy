@@ -5,7 +5,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { HotkeyCombo } from "@/components/hotkey-combo";
 import { PointyMark } from "@/components/pointy-mark";
 import { StepTabs, type StepId } from "@/components/onboarding/step-tabs";
-import { LiveWaveform } from "@/components/ui/live-waveform";
 import { Button } from "@/components/ui/button";
 import { useHotkeyPress } from "@/hooks/use-hotkey";
 import { Done } from "@/onboarding/done";
@@ -116,63 +115,36 @@ function Home({ combo, onSetupAgain }: { combo: Combo | null; onSetupAgain: () =
   const { held } = useHotkeyPress(true);
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-8 relative overflow-hidden">
-      <div className="relative z-10 flex flex-col items-center">
-        <div className="flex items-center gap-2.5">
-          <PointyMark className="size-6" />
-          <span className="text-[0.8125rem] font-semibold tracking-[0.22em] uppercase">Pointy</span>
-        </div>
-
-        <p className="mt-10 flex items-center gap-2.5 text-sm text-muted-foreground">
-          <span
-            className={
-              held
-                ? "size-2 rounded-full bg-signal shadow-[0_0_8px_var(--signal)]"
-                : "size-2 rounded-full bg-primary/70"
-            }
-          />
-          {held ? "Listening…" : "Running in the background"}
-        </p>
-
-        <div className="mt-5 flex items-center gap-3">
-          <span className="text-[0.9375rem] text-muted-foreground">Hold</span>
-          {combo ? (
-            <HotkeyCombo keys={combo.keys} size="sm" active={held} />
-          ) : (
-            <span className="text-[0.9375rem]">no hotkey set</span>
-          )}
-          <span className="text-[0.9375rem] text-muted-foreground">to ask about your screen</span>
-        </div>
-
-        <Button variant="ghost" size="sm" className="mt-10 text-muted-foreground" onClick={onSetupAgain}>
-          Run setup again
-        </Button>
+    <div className="flex h-full flex-col items-center justify-center px-8">
+      <div className="flex items-center gap-2.5">
+        <PointyMark className="size-6" />
+        <span className="text-[0.8125rem] font-semibold tracking-[0.22em] uppercase">Pointy</span>
       </div>
 
-      <AnimatePresence>
-        {held && (
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 40 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="absolute bottom-0 left-0 right-0 h-40 pointer-events-none"
-          >
-            <LiveWaveform
-              active={false}
-              processing={true}
-              barWidth={2}
-              barGap={1}
-              barRadius={4}
-              fadeEdges={true}
-              fadeWidth={150}
-              height="100%"
-              barColor="var(--accent)"
-              className="w-full opacity-60 mix-blend-screen"
-            />
-          </motion.div>
+      <p className="mt-10 flex items-center gap-2.5 text-sm text-muted-foreground">
+        <span
+          className={
+            held
+              ? "size-2 rounded-full bg-signal"
+              : "size-2 rounded-full bg-primary/70"
+          }
+        />
+        {held ? "Listening…" : "Running in the background"}
+      </p>
+
+      <div className="mt-5 flex items-center gap-3">
+        <span className="text-[0.9375rem] text-muted-foreground">Hold</span>
+        {combo ? (
+          <HotkeyCombo keys={combo.keys} size="sm" active={held} />
+        ) : (
+          <span className="text-[0.9375rem]">no hotkey set</span>
         )}
-      </AnimatePresence>
+        <span className="text-[0.9375rem] text-muted-foreground">to ask about your screen</span>
+      </div>
+
+      <Button variant="ghost" size="sm" className="mt-10 text-muted-foreground" onClick={onSetupAgain}>
+        Run setup again
+      </Button>
     </div>
   );
 }
