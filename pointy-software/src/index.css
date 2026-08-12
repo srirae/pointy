@@ -1,0 +1,127 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/instrument-sans";
+@import "@fontsource/instrument-serif";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Pointy design system.
+  Aura            #F4F6F8  app background
+  Restrained Obsidian #2E3A47  headline text
+  Muted Obsidian  #2E3A47 @ 62%  body copy
+  Muted Forest    #0D4A47  primary CTA
+  Nordic Ochre    #D9A865  secondary CTA / highlight
+  Signal Ochre    #FFA61F  guide-dot / pointing-arrow accent
+                           (same hue as Nordic Ochre, saturation pushed to 100%
+                            so it stays legible over arbitrary screen content)
+*/
+:root {
+  --aura: #f4f6f8;
+  --obsidian: #2e3a47;
+  --forest: #0d4a47;
+  --ochre: #d9a865;
+  --signal: #ffa61f;
+
+  --radius: 0.875rem;
+
+  --background: var(--aura);
+  --foreground: var(--obsidian);
+  --card: #ffffff;
+  --card-foreground: var(--obsidian);
+  --popover: #ffffff;
+  --popover-foreground: var(--obsidian);
+  --primary: var(--forest);
+  --primary-foreground: #ffffff;
+  --secondary: #e7ebef;
+  --secondary-foreground: var(--obsidian);
+  --muted: #e7ebef;
+  --muted-foreground: rgb(46 58 71 / 0.62);
+  --accent: var(--ochre);
+  --accent-foreground: #33291a;
+  --destructive: #a8412c;
+  --destructive-foreground: #ffffff;
+  --border: rgb(46 58 71 / 0.1);
+  --input: rgb(46 58 71 / 0.16);
+  --ring: var(--forest);
+}
+
+@theme inline {
+  --font-sans: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+
+  --color-aura: var(--aura);
+  --color-obsidian: var(--obsidian);
+  --color-forest: var(--forest);
+  --color-ochre: var(--ochre);
+  --color-signal: var(--signal);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/40;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    /* desktop chrome: the window is the whole surface, never a scrolling page */
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-optical-sizing: auto;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply text-foreground;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* the app is not a document — kill text selection except where it is useful */
+  body {
+    user-select: none;
+    cursor: default;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--ochre) 45%, transparent);
+    color: var(--obsidian);
+  }
+}
