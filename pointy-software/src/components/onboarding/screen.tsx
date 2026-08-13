@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
+import { motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 
 /**
- * The shared step layout from the reference flow: one question per screen, centred,
- * with the heading and supporting line above a single card.
+ * One question per screen — centred, calm, with the interactive stage in a single card.
+ * Wispr-style: the title is the job; the lede is just-in-time context.
  */
 export function Screen({
   title,
@@ -13,40 +14,87 @@ export function Screen({
   onBack,
   children,
   footnote,
+  progressHint,
+  wide = false,
 }: {
   title: string;
   lede?: ReactNode;
   onBack?: () => void;
   children: ReactNode;
   footnote?: ReactNode;
+  /** Soft progress copy like “Almost there” instead of a heavy progress bar. */
+  progressHint?: string;
+  wide?: boolean;
 }) {
   return (
     <div className="relative flex h-full flex-col items-center overflow-y-auto px-8 py-10">
       {onBack && (
-        <button
+        <motion.button
           type="button"
           onClick={onBack}
-          className="absolute top-10 left-10 inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          initial={{ opacity: 0, x: -6 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.05 }}
+          className="absolute top-9 left-9 inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="size-4" aria-hidden />
           Back
-        </button>
+        </motion.button>
       )}
 
-      <div className="m-auto flex w-full max-w-2xl flex-col items-center">
-        <h1 className="text-center font-serif text-[2.75rem] leading-[1.05] tracking-tight text-foreground">{title}</h1>
+      {progressHint && (
+        <motion.p
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="absolute top-9 right-9 text-[0.6875rem] font-semibold tracking-[0.14em] uppercase text-muted-foreground/80"
+        >
+          {progressHint}
+        </motion.p>
+      )}
+
+      <div
+        className={cn(
+          "m-auto flex w-full flex-col items-center",
+          wide ? "max-w-3xl" : "max-w-2xl",
+        )}
+      >
+        <motion.h1
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 380, damping: 28 }}
+          className="text-center font-serif text-[2.625rem] leading-[1.05] tracking-tight text-foreground"
+        >
+          {title}
+        </motion.h1>
         {lede && (
-          <p className="mt-4 max-w-lg text-center text-sm leading-relaxed text-muted-foreground">
+          <motion.p
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.06, type: "spring", stiffness: 380, damping: 28 }}
+            className="mt-4 max-w-lg text-center text-[0.9375rem] leading-relaxed text-muted-foreground"
+          >
             {lede}
-          </p>
+          </motion.p>
         )}
 
-        <div className="mt-8 w-full">{children}</div>
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1, type: "spring", stiffness: 340, damping: 28 }}
+          className="mt-9 w-full"
+        >
+          {children}
+        </motion.div>
 
         {footnote && (
-          <p className="mt-5 max-w-md text-center text-xs leading-relaxed text-muted-foreground/80">
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="mt-5 max-w-md text-center text-xs leading-relaxed text-muted-foreground/80"
+          >
             {footnote}
-          </p>
+          </motion.p>
         )}
       </div>
     </div>
@@ -57,8 +105,8 @@ export function Card({ className, children }: { className?: string; children: Re
   return (
     <div
       className={cn(
-        "rounded-xl border border-border/70 bg-card p-7",
-        "shadow-[0_1px_2px_rgba(46,58,71,0.04),0_18px_40px_-24px_rgba(46,58,71,0.22)]",
+        "rounded-2xl border border-border/60 bg-card/95 p-7 backdrop-blur-sm",
+        "shadow-[0_1px_2px_rgba(46,58,71,0.04),0_22px_48px_-28px_rgba(46,58,71,0.28)]",
         className,
       )}
     >
@@ -68,15 +116,20 @@ export function Card({ className, children }: { className?: string; children: Re
 }
 
 export function CardQuestion({ children }: { children: ReactNode }) {
-  return <p className="font-serif text-[1.375rem] font-medium tracking-tight text-foreground/90">{children}</p>;
+  return (
+    <p className="font-serif text-[1.375rem] font-medium tracking-tight text-foreground/90">
+      {children}
+    </p>
+  );
 }
 
-/** Inset panel the reference uses to hold the thing being demonstrated. */
+/** Inset panel that holds the thing being demonstrated. */
 export function Stage({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <div
       className={cn(
-        "relative mt-5 flex items-center justify-center rounded-lg bg-secondary/60 px-6 py-8",
+        "relative mt-5 flex items-center justify-center overflow-hidden rounded-xl bg-secondary/55 px-6 py-8",
+        "ring-1 ring-inset ring-border/40",
         className,
       )}
     >

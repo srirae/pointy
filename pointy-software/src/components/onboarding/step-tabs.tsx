@@ -1,13 +1,11 @@
-import { ChevronRight } from "lucide-react";
-
+import { PointyMark } from "@/components/pointy-mark";
 import { cn } from "@/lib/utils";
 
 export const STEPS = [
   { id: "welcome", label: "Welcome" },
-  { id: "permissions", label: "Permissions" },
+  { id: "explain", label: "Product" },
   { id: "hotkey", label: "Hotkey" },
-  { id: "microphone", label: "Microphone" },
-  { id: "done", label: "Done" },
+  { id: "speak", label: "Speak" },
 ] as const;
 
 export type StepId = (typeof STEPS)[number]["id"];
@@ -17,38 +15,56 @@ export function stepIndex(step: StepId) {
 }
 
 /**
- * Setup progress across the top of the window: the current step named, the ones behind
- * it dimmed, and a hairline that fills as the user moves forward.
+ * Clickable step rail — jump back or forward anywhere in setup.
  */
-export function StepTabs({ current }: { current: StepId }) {
+export function StepTabs({
+  current,
+  onStep,
+}: {
+  current: StepId;
+  onStep: (step: StepId) => void;
+}) {
   const index = stepIndex(current);
-  const progress = ((index + 1) / STEPS.length) * 100;
+  const hide = current === "welcome";
 
   return (
-    <header className="relative shrink-0 bg-card">
-      <nav className="flex items-center justify-center gap-1 py-4">
-        {STEPS.map((step, i) => (
-          <div key={step.id} className="flex items-center gap-1">
-            {i > 0 && <ChevronRight className="size-3.5 text-foreground/20" aria-hidden />}
-            <span
-              aria-current={i === index ? "step" : undefined}
+    <header
+      className={cn(
+        "relative z-10 flex shrink-0 items-center justify-between px-8 py-4 transition-opacity",
+        hide && "pointer-events-none opacity-0",
+      )}
+    >
+      <div className="flex items-center gap-2.5">
+        <PointyMark className="size-5" />
+        <span className="text-[0.75rem] font-semibold tracking-[0.2em] uppercase text-foreground/90">
+          Pointy
+        </span>
+      </div>
+
+      <nav className="flex items-center gap-1" aria-label="Setup steps">
+        {STEPS.map((step, i) => {
+          if (step.id === "welcome") return null;
+          const active = i === index;
+          const done = i < index;
+          return (
+            <button
+              key={step.id}
+              type="button"
+              onClick={() => onStep(step.id)}
               className={cn(
-                "px-4 text-[0.6875rem] font-semibold tracking-[0.14em] uppercase transition-colors",
-                i === index ? "text-foreground" : "text-muted-foreground/70",
+                "rounded-full px-3 py-1.5 text-[0.6875rem] font-semibold tracking-wide transition-all",
+                active
+                  ? "bg-forest text-white shadow-sm"
+                  : done
+                    ? "bg-ochre/15 text-foreground hover:bg-ochre/25"
+                    : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground",
               )}
             >
               {step.label}
-            </span>
-          </div>
-        ))}
+            </button>
+          );
+        })}
       </nav>
-
-      <div className="absolute inset-x-0 bottom-0 h-px bg-foreground/10">
-        <div
-          className="h-[2px] bg-accent transition-[width] duration-500 ease-out"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
     </header>
   );
 }
