@@ -154,7 +154,6 @@ export function Permissions({ onBack, onNext }: { onBack: () => void; onNext: ()
       title="Three permissions. That’s it."
       lede="Hear, see, then point — mic, screen, and accessibility. Nothing is captured until you hold your hotkey."
       onBack={onBack}
-      progressHint="Step 3 of 5"
       footnote="Screenshots and questions are used to answer, then dropped. Nothing is kept after the answer."
       wide
     >
@@ -292,7 +291,7 @@ function PermissionStory({
         <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
           Why we ask
         </p>
-        <h2 className="mt-2 font-serif text-[1.75rem] leading-tight tracking-tight">
+        <h2 className="mt-2 text-[1.5rem] font-bold leading-tight tracking-[-0.03em]">
           Hear → see → point
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">

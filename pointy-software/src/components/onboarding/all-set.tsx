@@ -28,7 +28,7 @@ export function AllSet({
           <PointyMark className="size-8" />
         </div>
 
-        <h1 className="mt-8 font-serif text-[2rem] leading-tight tracking-tight text-foreground">
+        <h1 className="mt-8 text-[1.875rem] font-bold leading-tight tracking-[-0.035em] text-foreground">
           You’re all set
         </h1>
 

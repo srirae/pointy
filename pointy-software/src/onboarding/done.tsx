@@ -38,7 +38,6 @@ export function Done({
       title="You’re ready"
       lede="Pointy sits in the background from here. Hold your hotkey whenever you’re stuck and ask out loud."
       onBack={onBack}
-      progressHint="Last step"
       footnote="Pointy takes a screenshot only at the moment you ask, and drops it once you have the answer."
     >
       <Card className="overflow-hidden p-0">

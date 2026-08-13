@@ -66,7 +66,7 @@ export function Welcome({ onNext }: { onNext: () => void }) {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
             >
-              <h1 className="max-w-[18ch] font-serif text-[2.75rem] leading-[1.06] tracking-tight text-foreground lg:text-[3rem]">
+              <h1 className="max-w-[18ch] text-[2.5rem] leading-[1.08] font-bold tracking-[-0.04em] text-foreground lg:text-[2.75rem]">
                 {current.headline}
               </h1>
               <p className="mt-5 max-w-[38ch] text-[0.975rem] leading-relaxed text-muted-foreground">

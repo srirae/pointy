@@ -14,7 +14,6 @@ export function Screen({
   onBack,
   children,
   footnote,
-  progressHint,
   wide = false,
 }: {
   title: string;
@@ -22,8 +21,6 @@ export function Screen({
   onBack?: () => void;
   children: ReactNode;
   footnote?: ReactNode;
-  /** Soft progress copy like “Almost there” instead of a heavy progress bar. */
-  progressHint?: string;
   wide?: boolean;
 }) {
   return (
@@ -42,16 +39,6 @@ export function Screen({
         </motion.button>
       )}
 
-      {progressHint && (
-        <motion.p
-          initial={{ opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="absolute top-9 right-9 text-[0.6875rem] font-semibold tracking-[0.14em] uppercase text-muted-foreground/80"
-        >
-          {progressHint}
-        </motion.p>
-      )}
-
       <div
         className={cn(
           "m-auto flex w-full flex-col items-center",
@@ -62,7 +49,7 @@ export function Screen({
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 380, damping: 28 }}
-          className="text-center font-serif text-[2.625rem] leading-[1.05] tracking-tight text-foreground"
+          className="text-center text-[2.375rem] leading-[1.08] font-bold tracking-[-0.035em] text-foreground"
         >
           {title}
         </motion.h1>
@@ -117,7 +104,7 @@ export function Card({ className, children }: { className?: string; children: Re
 
 export function CardQuestion({ children }: { children: ReactNode }) {
   return (
-    <p className="font-serif text-[1.375rem] font-medium tracking-tight text-foreground/90">
+    <p className="text-[1.125rem] font-semibold tracking-[-0.02em] text-foreground/90">
       {children}
     </p>
   );

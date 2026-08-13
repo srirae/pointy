@@ -5,7 +5,6 @@ import { GlassPreview } from "@/components/onboarding/glass-preview";
 import { DEMO_BEATS, ProductDemoReel } from "@/components/onboarding/product-demo-reel";
 import { Screen } from "@/components/onboarding/screen";
 import { StepNav } from "@/components/onboarding/step-nav";
-import { progressLabel } from "@/lib/onboarding-flow";
 
 /**
  * Step 2 — auto demo reel + glass panel visual (voice wake + text, not clickable).
@@ -24,7 +23,6 @@ export function Explain({
     <Screen
       title="Wake it. Ask out loud. Or type."
       lede="Pointy lives in a glass panel on your screen — voice-first, text when you want it."
-      progressHint={progressLabel("explain")}
       wide
     >
       <div className="grid gap-5 lg:grid-cols-2">

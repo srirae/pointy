@@ -14,6 +14,13 @@ function getSpeechRecognition(): SpeechRecognitionCtor | null {
 /**
  * Browser speech-to-text while `listening` is true (tie to hotkey hold).
  * Shows interim + committed text so the user can judge mic accuracy.
+ *
+ * Hold-to-talk handling: releasing the hotkey stops recognition immediately,
+ * and the browser may never emit a *final* result for the last words you said.
+ * To keep the transcript honest we mirror the latest interim text in a ref and
+ * flush it — finals first, interim as a fallback — the moment the hold ends.
+ * Otherwise short phrases (“where do I click”) come back empty and long ones
+ * lose their tail, which reads as “speech recognition doesn’t work”.
  */
 export function useSpeechRecognition(listening: boolean) {
   const [committed, setCommitted] = useState("");
@@ -21,15 +28,31 @@ export function useSpeechRecognition(listening: boolean) {
   const [error, setError] = useState<string | null>(null);
   const [supported, setSupported] = useState(true);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const sessionRef = useRef("");
+  const sessionRef = useRef(""); // final results for the current hold
+  const interimRef = useRef(""); // latest non-final words for the current hold
+
+  const flushHold = () => {
+    const finalText = sessionRef.current.trim();
+    const interimText = interimRef.current.trim();
+    sessionRef.current = "";
+    interimRef.current = "";
+    const text = [finalText, interimText].filter(Boolean).join(" ");
+    if (!text) return;
+    setCommitted((prev) => (prev ? `${prev} ${text}` : text).trim());
+  };
 
   useEffect(() => {
     if (!listening) {
-      recognitionRef.current?.stop();
+      const recognition = recognitionRef.current;
       recognitionRef.current = null;
-      if (sessionRef.current.trim()) {
-        setCommitted((prev) => (prev ? `${prev} ${sessionRef.current}` : sessionRef.current).trim());
-        sessionRef.current = "";
+
+      if (recognition) {
+        // stop() can still deliver a final result for the tail of the utterance,
+        // so flush now, then flush again in onend once those late results land.
+        recognition.stop();
+        flushHold();
+      } else {
+        flushHold();
       }
       setInterim("");
       return;
@@ -45,6 +68,7 @@ export function useSpeechRecognition(listening: boolean) {
     setSupported(true);
     setError(null);
     sessionRef.current = "";
+    interimRef.current = "";
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -52,19 +76,20 @@ export function useSpeechRecognition(listening: boolean) {
     recognition.lang = "en-US";
 
     recognition.onresult = (event) => {
+      let finalText = sessionRef.current;
       let interimText = "";
-      let session = sessionRef.current;
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const text = result[0]?.transcript?.trim();
         if (!text) continue;
-        if (result.isFinal) session = session ? `${session} ${text}` : text;
+        if (result.isFinal) finalText = finalText ? `${finalText} ${text}` : text;
         else interimText += text;
       }
 
-      sessionRef.current = session;
-      setInterim([session, interimText].filter(Boolean).join(" ").trim());
+      sessionRef.current = finalText;
+      interimRef.current = interimText;
+      setInterim([finalText, interimText].filter(Boolean).join(" ").trim());
     };
 
     recognition.onerror = (event) => {
@@ -79,6 +104,11 @@ export function useSpeechRecognition(listening: boolean) {
         } catch {
           /* restart after auto-stop */
         }
+      } else {
+        // Hold released (or recognition stopped for another reason) — commit any
+        // words that landed between stop() and now.
+        flushHold();
+        setInterim("");
       }
     };
 
@@ -102,6 +132,7 @@ export function useSpeechRecognition(listening: boolean) {
     setCommitted("");
     setInterim("");
     sessionRef.current = "";
+    interimRef.current = "";
     setError(null);
   };
 

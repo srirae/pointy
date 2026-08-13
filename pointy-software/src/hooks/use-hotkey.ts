@@ -203,6 +203,36 @@ export function useHotkeyPress(active: boolean) {
 
   useEffect(() => {
     if (!active) return;
+
+    // Browser preview: the Rust keyboard hook doesn't exist, so holding the Space
+    // bar stands in for the hotkey hold. This makes the speak step testable before
+    // the desktop shell is involved.
+    if (!isTauri()) {
+      const onDown = (event: KeyboardEvent) => {
+        if (event.code !== "Space") return;
+        event.preventDefault();
+        if (!heldRef.current) {
+          heldRef.current = true;
+          setHeld(true);
+        }
+      };
+      const onUp = (event: KeyboardEvent) => {
+        if (event.code !== "Space") return;
+        event.preventDefault();
+        if (heldRef.current) {
+          heldRef.current = false;
+          setHeld(false);
+          setPressCount((count) => count + 1);
+        }
+      };
+      window.addEventListener("keydown", onDown);
+      window.addEventListener("keyup", onUp);
+      return () => {
+        window.removeEventListener("keydown", onDown);
+        window.removeEventListener("keyup", onUp);
+      };
+    }
+
     const unlisteners: Array<() => void> = [];
     let cancelled = false;
 

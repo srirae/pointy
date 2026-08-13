@@ -62,7 +62,7 @@ export default function App() {
   return (
     <div className="relative flex h-full flex-col">
       <Atmosphere />
-      <StepTabs current={view.step} onStep={go} />
+      <StepTabs current={view.step} />
 
       <main className="relative z-10 min-h-0 flex-1">
         <AnimatePresence mode="wait">

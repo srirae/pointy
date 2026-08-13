@@ -11,8 +11,8 @@ import { VoiceButton, type VoiceButtonState } from "@/components/ui/voice-button
 import { useHotkeyPress } from "@/hooks/use-hotkey";
 import { useMicLevels } from "@/hooks/use-mic-levels";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
-import { progressLabel } from "@/lib/onboarding-flow";
 import { permissionsRequest, permissionsStatus, settingsFinishOnboarding, type Combo } from "@/lib/pointy";
+import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 const MIN_WORDS = 2;
@@ -68,7 +68,6 @@ export function WakeSpeak({
     <Screen
       title="Wake the glass panel and speak"
       lede="Hold your hotkey — the glass panel opens. Say something out loud and check the transcript matches what you meant."
-      progressHint={progressLabel("speak")}
       wide
     >
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
@@ -98,6 +97,11 @@ export function WakeSpeak({
                 ? "Keep holding — speak clearly, then release."
                 : "Press and hold your hotkey now."}
             </p>
+            {!isTauri() && (
+              <p className="mt-2 text-center text-xs text-muted-foreground/80">
+                In preview: hold the Space bar to simulate your hotkey.
+              </p>
+            )}
           </Card>
 
           <MicShowcaseVisual level={level} bands={bands} heard={held || heard} />

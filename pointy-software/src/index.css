@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/instrument-sans";
+@import "@fontsource-variable/figtree";
 @import "@fontsource/instrument-serif";
 
 @custom-variant dark (&:is(.dark *));
@@ -47,7 +47,11 @@
 }
 
 @theme inline {
-  --font-sans: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  /* Figtree is the closest open face to the geometric grotesque in the refs:
+     wide, warm, single-storey g, tight at display sizes. */
+  --font-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
+  /* Serif is reserved for spoken lines and marketing quotes, not UI headings. */
   --font-serif: "Instrument Serif", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
 
   --color-aura: var(--aura);
@@ -106,8 +110,15 @@
   h2,
   h3 {
     @apply text-foreground;
-    letter-spacing: -0.02em;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.03em;
     text-wrap: balance;
+  }
+
+  /* Body copy sits a touch looser than Figtree's default to keep the calm feel. */
+  p {
+    letter-spacing: -0.005em;
   }
 
   p {

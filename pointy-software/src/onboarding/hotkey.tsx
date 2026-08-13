@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 
 import { useHotkeyCapture } from "@/hooks/use-hotkey";
 
-import { progressLabel } from "@/lib/onboarding-flow";
 
 import { hotkeySave, type Combo } from "@/lib/pointy";
 
@@ -134,7 +133,6 @@ export function Hotkey({
 
       lede="Hold the keys you want, then let go. This is the gesture that opens the glass panel."
 
-      progressHint={progressLabel("hotkey")}
 
     >
 

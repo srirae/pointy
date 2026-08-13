@@ -17,7 +17,6 @@ export function Intent({ onBack, onNext }: { onBack: () => void; onNext: () => v
       title="See Pointy work once"
       lede="Pick any software below. Watch someone get stuck, hear the answer, then turn on the pointer to see exactly where to click."
       onBack={onBack}
-      progressHint="Step 2 of 6"
       wide
     >
       <LiveSandbox onExperienced={() => setExperienced(true)} />
