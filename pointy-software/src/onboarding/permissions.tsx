@@ -23,7 +23,7 @@ const COPY: Record<
 > = {
   microphone: {
     label: "Microphone",
-    why: "So Pointy can hear the question. Listening and transcription run on your machine.",
+    why: "So Pointy can hear the question. Listening happens on your machine.",
     visual: "Hears you",
     icon: Mic,
   },

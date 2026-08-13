@@ -12,6 +12,17 @@ export default defineConfig({
   // side.jpg and the icons already live in static/, so that is the public dir.
   publicDir: "static",
 
+  // Two windows, two documents: the setup window (index.html) and the push-to-talk
+  // pill (overlay.html). Both must be emitted or the overlay window loads nothing.
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        overlay: path.resolve(__dirname, "overlay.html"),
+      },
+    },
+  },
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

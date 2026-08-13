@@ -5,12 +5,13 @@ import { cn } from "@/lib/utils";
 
 const BAR_COUNT = 48;
 
-function qualityCopy(level: number, heard: boolean) {
-  if (!heard && level < 0.04) return { label: "Waiting for your voice…", tone: "muted" as const };
-  if (!heard) return { label: "Almost there — speak a little louder", tone: "warm" as const };
+function qualityCopy(level: number, heard: boolean, error: string | null) {
+  if (error) return { label: "Permission Denied / No Audio", tone: "muted" as const };
+  if (!heard && level < 0.04) return { label: "Listening... Waiting for your voice", tone: "muted" as const };
+  if (!heard) return { label: "Voice detected — speak a little louder", tone: "warm" as const };
   if (level > 0.45) return { label: "Crystal clear — your mic is perfect", tone: "great" as const };
   if (level > 0.2) return { label: "Sounds great — Pointy will hear you clearly", tone: "good" as const };
-  return { label: "Good — keep talking naturally", tone: "good" as const };
+  return { label: "Voice detected — keep talking naturally", tone: "good" as const };
 }
 
 /**
@@ -20,13 +21,15 @@ export function MicShowcaseVisual({
   level,
   bands,
   heard,
+  error,
 }: {
   level: number;
   bands: number[];
   heard: boolean;
+  error: string | null;
 }) {
-  const energy = Math.min(1, level * 2.2);
-  const copy = qualityCopy(level, heard);
+  const energy = Math.min(1, level * 3.5);
+  const copy = qualityCopy(level, heard, error);
 
   return (
     <div className="relative flex min-h-[22rem] flex-col items-center justify-center overflow-hidden rounded-2xl border border-border/50 bg-gradient-to-b from-card via-secondary/30 to-forest/[0.06]">
@@ -62,7 +65,7 @@ export function MicShowcaseVisual({
         {Array.from({ length: BAR_COUNT }, (_, i) => {
           const bandIndex = Math.floor((i / BAR_COUNT) * bands.length);
           const band = bands[bandIndex] ?? 0;
-          const height = 10 + band * 44 + energy * 18;
+          const height = 10 + band * 80 + energy * 24;
           const angle = (i / BAR_COUNT) * 360;
           return (
             <motion.div

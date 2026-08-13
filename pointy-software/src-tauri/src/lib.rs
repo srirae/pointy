@@ -7,6 +7,7 @@
 //!                   reads the same frames.
 //! * `hotkey`      — one global keyboard hook, used both to record a combo and to emit
 //!                   the push-to-talk down/up edges Phase 1 activation needs.
+//! * `overlay`     — the push-to-talk pill window, shown on the hotkey down edge.
 //! * `permissions` — real OS state for mic, screen capture and accessibility.
 //! * `settings`    — persisted hotkey / device / onboarding state.
 
@@ -14,6 +15,7 @@ mod audio;
 mod hotkey;
 mod keyboard;
 mod keys;
+mod overlay;
 mod permissions;
 mod settings;
 
@@ -134,7 +136,18 @@ fn settings_get(app: AppHandle) -> Settings {
 
 #[tauri::command]
 fn settings_finish_onboarding(app: AppHandle) -> Result<Settings, String> {
-    settings::update(&app, |settings| settings.onboarding_complete = true)
+    let settings = settings::update(&app, |settings| settings.onboarding_complete = true)?;
+    overlay::set_enabled(&app, true);
+    Ok(settings)
+}
+
+// -------------------------------------------------------------------- overlay
+
+/// Arm or silence the push-to-talk pill. The setup window silences it while onboarding
+/// is on screen, because that step drives the one microphone stream itself.
+#[tauri::command]
+fn overlay_set_enabled(app: AppHandle, enabled: bool) {
+    overlay::set_enabled(&app, enabled);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -148,10 +161,16 @@ pub fn run() {
                 audio: AudioManager::new(),
             };
 
+            let stored = settings::load(&handle);
+
             // A hotkey recorded in a previous run is live from launch.
-            if let Some(combo) = settings::load(&handle).hotkey {
+            if let Some(combo) = stored.hotkey {
                 state.hotkey.arm(combo);
             }
+
+            // The pill exists from launch; it only becomes visible once setup is done.
+            overlay::prepare(&handle);
+            overlay::set_enabled(&handle, stored.onboarding_complete);
 
             app.manage(state);
             Ok(())
@@ -172,6 +191,7 @@ pub fn run() {
             hotkey_clear,
             settings_get,
             settings_finish_onboarding,
+            overlay_set_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

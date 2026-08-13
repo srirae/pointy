@@ -95,9 +95,13 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
   try {
     return await tauriInvoke<T>(cmd, args);
-  } catch {
-    // Never surface raw bridge TypeErrors in onboarding — fall back to preview.
-    return previewInvoke<T>(cmd, args);
+  } catch (reason) {
+    // A missing bridge is a preview problem and falls back silently. Anything else is
+    // a real answer from Rust — "Windows is blocking microphone access", a device that
+    // vanished — and swallowing it here is what made a dead microphone look like a
+    // working one. Those must reach the caller.
+    if (reason instanceof TypeError) return previewInvoke<T>(cmd, args);
+    throw reason;
   }
 }
 
@@ -147,6 +151,9 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "settings_finish_onboarding":
       preview.settings.onboarding_complete = true;
       return { ...preview.settings } as T;
+    case "overlay_set_enabled":
+      // No second window in browser preview — nothing to arm.
+      return undefined as T;
     default:
       throw new Error(`Preview mode has no handler for “${cmd}”.`);
   }
@@ -189,6 +196,10 @@ export const hotkeyCurrent = () => invoke<Combo | null>("hotkey_current");
 // settings
 export const settingsGet = () => invoke<Settings>("settings_get");
 export const settingsFinishOnboarding = () => invoke<Settings>("settings_finish_onboarding");
+
+// overlay
+export const overlaySetEnabled = (enabled: boolean) =>
+  invoke<void>("overlay_set_enabled", { enabled });
 
 // events
 export const onCaptureProgress = (cb: (update: CaptureUpdate) => void): Promise<UnlistenFn> =>

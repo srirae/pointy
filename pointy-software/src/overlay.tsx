@@ -1,43 +1,57 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
-import { VoiceVisualizer } from "./components/overlay/voice-visualizer";
-import { useMicLevels } from "./hooks/use-mic-levels";
-import { useSpeechRecognition } from "./hooks/use-speech-recognition";
 
-type State = "idle" | "listening" | "processing";
+import { Pill, type PillState } from "@/components/overlay/pill";
+import { useMicLevels } from "@/hooks/use-mic-levels";
+import { onHotkeyDown, onHotkeyUp } from "@/lib/pointy";
 
+/**
+ * The floating pill window.
+ *
+ * The window itself is shown and hidden by Rust — it appears once onboarding is complete
+ * and then stays up, idle and click-through, like any other system overlay (see
+ * `src-tauri/src/overlay.rs`). What changes here is only the pill's state, so every
+ * transition is a layout animation inside a canvas that never moves.
+ *
+ * The pill follows the hotkey directly: down opens it, up closes it. There is no
+ * post-release state because nothing happens after the release yet — when a recogniser
+ * lands, this is where its phase belongs.
+ */
 export function Overlay() {
-  const [state, setState] = useState<State>("idle");
-  const { bands } = useMicLevels(state === "listening");
-  const { wordCount, reset } = useSpeechRecognition(state === "listening");
+  const [phase, setPhase] = useState<PillState>("idle");
+  // The microphone opens for exactly as long as the hotkey is held, and never while the
+  // pill is idle.
+  const { bands, level, error: micError } = useMicLevels(phase === "listening");
 
   useEffect(() => {
-    // We add a tiny delay before capturing to avoid capturing the keypress sound if any
-    const unlistenDown = listen("hotkey://down", () => {
-      setState("listening");
-      reset();
-    });
-    const unlistenUp = listen("hotkey://up", () => {
-      setState("processing");
-      // Simulate processing time before hiding
-      setTimeout(async () => {
-        setState("idle");
-        await getCurrentWindow().hide();
-      }, 1500);
-    });
+    const unlisteners: Array<() => void> = [];
+    let cancelled = false;
+
+    (async () => {
+      const down = await onHotkeyDown(() => setPhase("listening"));
+      const up = await onHotkeyUp(() => setPhase("idle"));
+
+      if (cancelled) {
+        down();
+        up();
+        return;
+      }
+      unlisteners.push(down, up);
+    })();
 
     return () => {
-      unlistenDown.then((f) => f());
-      unlistenUp.then((f) => f());
+      cancelled = true;
+      unlisteners.forEach((off) => off());
     };
-  }, [reset]);
+  }, []);
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-transparent overflow-hidden">
-      <div className="pointer-events-none rounded-full bg-card/90 backdrop-blur-xl shadow-[0_0_0_1px_rgba(46,58,71,0.08),0_20px_50px_-20px_rgba(13,74,71,0.45)] px-8 py-4 border border-border/50">
-        <VoiceVisualizer state={state} bands={bands} wordCount={wordCount} />
-      </div>
+    <div className="flex h-screen w-screen items-end justify-center pb-16 overflow-hidden bg-transparent">
+      <Pill
+        state={phase}
+        bands={bands}
+        level={level}
+        error={phase === "idle" ? null : micError}
+      />
     </div>
   );
 }

@@ -209,6 +209,9 @@ impl Inner {
                 if combo.is_held_by(&pressed)
                     && !self.armed_down.swap(true, Ordering::SeqCst)
                 {
+                    // Show first, emit second: the pill has to be on screen before the
+                    // webview has any work to do, or the hold feels laggy.
+                    crate::overlay::show(&self.app);
                     let _ = self.app.emit("hotkey://down", combo);
                 }
             }

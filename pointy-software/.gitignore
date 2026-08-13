@@ -1,6 +1,8 @@
 .DS_Store
 node_modules
 /build
+# vite build output — tauri.conf.json points frontendDist at it
+/dist
 /.svelte-kit
 /package
 .env
