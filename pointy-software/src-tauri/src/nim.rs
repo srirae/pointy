@@ -1,8 +1,8 @@
 //! NVIDIA NIM from Rust — reads `.env` off disk and calls the API without CORS.
 //!
-//! The overlay webview cannot see Vite's `import.meta.env` reliably (env is baked at
-//! `vite` start, and a missing key plus a failed fetch both used to show the same
-//! "you need a NIM key" message). This module is the source of truth.
+//! The key must never reach the webview: Vite inlines `VITE_*` vars into the bundle
+//! at build time, so a browser-side key would ship inside the installer. Only
+//! unprefixed names are accepted here, and this module is the single source of truth.
 
 use std::fs;
 use std::path::PathBuf;
@@ -26,22 +26,22 @@ const TRANSCRIBE_MODELS: &[&str] = &[
     "nvidia/parakeet-tdt-0.6b-v2",
 ];
 
-const SYSTEM: &str = r#"You are Pointy. You look at a screenshot of the user's screen and tell them where to click.
+const SYSTEM: &str = r#"You are Pointy, a screen guide. You receive a screenshot taken at the moment the user sent their question, cropped to the app they chose to work on. Pointy's own glass was hidden for that shot.
 
 Respond with ONLY valid JSON (no markdown fences, no extra text):
-{"answer":"2-5 short sentences. Bold UI names with **double asterisks**.","advice":"one encouraging line","target":{"label":"Close","x":0.96,"y":0.02,"w":0.035,"h":0.05}}
+{"answer":"2-5 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","target":{"label":"Editor","x":0.22,"y":0.12,"w":0.55,"h":0.70}}
 
-target.x/y/w/h are fractions from 0 to 1 of the screenshot.
-- x,y is the TOP-LEFT of the control they should click
-- w,h is how wide/tall that control is
-- label is 1-3 words (Close, File, Save, Send…)
-
-If you can see the control, you MUST fill target. Examples:
-- close / exit / X → the rightmost caption button at the top-right of the active window
-- minimize → the left or middle caption button
-- a named button or menu → that control's box
-
-If there is no clickable control for the question, set "target": null."#;
+Rules:
+- Answer for the app in the image (Cursor, VS Code, Chrome, Word, Explorer, …). Describe only controls you can actually see.
+- Never mention Pointy, never describe Pointy's glass panel, never tell the user to click Pointy.
+- If a frosted panel labeled Pointy is somehow in the image, ignore it completely.
+- "Cursor" means the Cursor code editor (like VS Code). Where to type code is the large editor pane in the center — not a mouse pointer, not Pointy, not the window title.
+- Cursor's chat/composer is usually a right-hand sidebar or a bar at the bottom. The file editor is the big center text area. Use the screenshot to choose the one they asked about.
+- Do not invent buttons or menus that are not visible.
+- answer and advice are plain sentences only. Never put JSON, coordinates, or the word Target in them.
+- target is the EXACT bounding box of the UI element they asked about, as fractions 0-1 of the image: x,y = top-left, w,h = width and height. A glowing border is drawn on those edges, so the box must hug the control — not a tiny marker, not a random corner, not the whole image.
+- Never set target to Pointy or this assistant's panel.
+- If you cannot see a clickable control, set "target": null and still answer from what you can see."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClickTarget {
@@ -59,7 +59,11 @@ pub struct NimReply {
     pub target: Option<ClickTarget>,
 }
 
-pub fn ask_screen(question: &str, screenshot: Option<&str>) -> Result<NimReply, String> {
+pub fn ask_screen(
+    question: &str,
+    screenshot: Option<&str>,
+    app: Option<&str>,
+) -> Result<NimReply, String> {
     let key = load_key()?;
     let trimmed = question.trim();
     if trimmed.is_empty() {
@@ -75,9 +79,11 @@ pub fn ask_screen(question: &str, screenshot: Option<&str>) -> Result<NimReply, 
         .build()
         .map_err(|e| format!("Could not reach NVIDIA: {e}"))?;
 
+    let subject = app.map(str::trim).filter(|s| !s.is_empty());
+
     if let Some(image) = screenshot.filter(|s| s.starts_with("data:image")) {
         for model in VISION_MODELS {
-            match complete(&client, &key, model, trimmed, Some(image)) {
+            match complete(&client, &key, model, trimmed, Some(image), subject) {
                 Ok(reply) => return Ok(reply),
                 Err(err) => eprintln!("[nim] vision {model}: {err}"),
             }
@@ -86,7 +92,7 @@ pub fn ask_screen(question: &str, screenshot: Option<&str>) -> Result<NimReply, 
 
     let mut last = "No text model answered.".to_string();
     for model in TEXT_MODELS {
-        match complete(&client, &key, model, trimmed, None) {
+        match complete(&client, &key, model, trimmed, None, subject) {
             Ok(reply) => return Ok(reply),
             Err(err) => {
                 eprintln!("[nim] text {model}: {err}");
@@ -164,9 +170,14 @@ fn complete(
     model: &str,
     question: &str,
     image: Option<&str>,
+    app: Option<&str>,
 ) -> Result<NimReply, String> {
+    let subject = match app {
+        Some(name) => format!("The user is working in {name}. "),
+        None => String::new(),
+    };
     let prompt = format!(
-        "{question}\n\nUse the screenshot. If a control should be clicked, set target to its box as 0-1 fractions of the image."
+        "{subject}The user asked: {question}\n\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only."
     );
     let user = if let Some(url) = image {
         serde_json::json!([
@@ -225,41 +236,43 @@ fn parse_reply(raw: &str) -> NimReply {
 
     if let Some(json) = extract_json(cleaned) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) {
-            let answer = value
-                .get("answer")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(cleaned)
-                .to_string();
-            let advice = value
-                .get("advice")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .unwrap_or("Click Indicate if you want me to point at it.")
-                .to_string();
-            return NimReply {
-                answer,
-                advice,
-                target: parse_target(value.get("target")),
-            };
+            let answer = scrub_visible(
+                value
+                    .get("answer")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            );
+            let advice = scrub_visible(
+                value
+                    .get("advice")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            );
+            if !answer.is_empty() {
+                return NimReply {
+                    answer,
+                    advice: if is_cta_advice(&advice) {
+                        String::new()
+                    } else {
+                        advice
+                    },
+                    target: parse_target(value.get("target")),
+                };
+            }
         }
     }
 
-    let lines: Vec<&str> = cleaned.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    if lines.len() > 1 {
-        let last = *lines.last().unwrap();
-        if last.len() < 120 && !last.starts_with('#') {
-            return NimReply {
-                answer: lines[..lines.len() - 1].join("\n"),
-                advice: last.trim_start_matches('*').trim().to_string(),
-                target: None,
-            };
-        }
+    let visible = scrub_visible(cleaned);
+    if visible.is_empty() {
+        return NimReply {
+            answer: "I can see the screen, but I could not read a clear answer. Ask again in a few words.".into(),
+            advice: String::new(),
+            target: None,
+        };
     }
     NimReply {
-        answer: cleaned.to_string(),
-        advice: "Click Indicate if you want me to point at it.".into(),
+        answer: visible,
+        advice: String::new(),
         target: None,
     }
 }
@@ -298,7 +311,51 @@ fn parse_target(value: Option<&serde_json::Value>) -> Option<ClickTarget> {
         .filter(|s| !s.is_empty())
         .unwrap_or("here")
         .to_string();
+    if label.to_lowercase().contains("pointy") {
+        return None;
+    }
     Some(ClickTarget { label, x, y, w, h })
+}
+
+/// Drop leaked JSON / "Target:" dumps so the glass never shows model plumbing.
+fn scrub_visible(text: &str) -> String {
+    let mut s = text.trim().to_string();
+    if let Some(idx) = s.to_lowercase().find("target:") {
+        s.truncate(idx);
+    }
+    if let Some(idx) = s.find("```") {
+        s.truncate(idx);
+    }
+    if let Some(idx) = s.rfind('{') {
+        let tail = &s[idx..];
+        if tail.contains("\"label\"") || tail.contains("\"x\"") || tail.contains("\"advice\"") {
+            s.truncate(idx);
+        }
+    }
+    s.split('\n')
+        .map(str::trim)
+        .filter(|line| {
+            if line.is_empty() {
+                return false;
+            }
+            let lower = line.to_lowercase();
+            !lower.starts_with("click indicate")
+                && !lower.contains("if you want me to point")
+                && !line.starts_with('{')
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn is_cta_advice(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.is_empty()
+        || lower.contains("indicate")
+        || lower.contains("point it")
+        || lower.contains('{')
+        || lower.contains("target:")
 }
 
 /// Models sometimes return percents (0-100) or pixels. Fold everything onto 0..1.
@@ -313,12 +370,7 @@ fn norm(value: f64) -> f64 {
 }
 
 fn load_key() -> Result<String, String> {
-    for name in [
-        "NVIDIA_API_KEY",
-        "NVIDIA_NIM_API_KEY",
-        "VITE_NVIDIA_API_KEY",
-        "VITE_NVIDIA_NIM_API_KEY",
-    ] {
+    for name in ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"] {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -331,7 +383,7 @@ fn load_key() -> Result<String, String> {
             return Ok(key);
         }
     }
-    Err("Found no NVIDIA API key. Put VITE_NVIDIA_API_KEY in pointy-software/.env and restart.".into())
+    Err("Found no NVIDIA API key. Put NVIDIA_API_KEY in pointy-software/.env and restart.".into())
 }
 
 fn env_paths() -> Vec<PathBuf> {
@@ -372,10 +424,7 @@ fn key_from_file(path: &PathBuf) -> Option<String> {
             continue;
         };
         let key = key.trim();
-        if !matches!(
-            key,
-            "NVIDIA_API_KEY" | "NVIDIA_NIM_API_KEY" | "VITE_NVIDIA_API_KEY" | "VITE_NVIDIA_NIM_API_KEY"
-        ) {
+        if !matches!(key, "NVIDIA_API_KEY" | "NVIDIA_NIM_API_KEY") {
             continue;
         }
         let value = value.trim().trim_matches('"').trim_matches('\'');

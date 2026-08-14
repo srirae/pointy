@@ -1,4 +1,4 @@
-import { askScreen, type ClickTarget, wakeSession } from "@/lib/pointy";
+import { askScreen, captureScope, type ClickTarget, type Shot } from "@/lib/pointy";
 
 export type ScreenAskReply = {
   answer: string;
@@ -32,28 +32,35 @@ export async function shrinkScreenshot(dataUrl: string, maxEdge = 1280): Promise
   });
 }
 
-export async function waitForScreenshot(ms = 2800): Promise<string | null> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    try {
-      const session = await wakeSession();
-      if (session.screenshot) return session.screenshot;
-    } catch {
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 90));
-  }
-  return null;
+/**
+ * Photograph what the user is looking at right now. Pointy hides itself for the
+ * shot, and the result carries the slice of screen it covers so a box inside it
+ * can be mapped back onto the full-screen overlay.
+ */
+export function grabScreen(windowId: number | null): Promise<Shot> {
+  return captureScope(windowId);
+}
+
+/** Move a box from shot-relative fractions to screen-relative fractions. */
+export function targetToScreen(target: ClickTarget, shot: Shot): ClickTarget {
+  return {
+    ...target,
+    x: shot.x + target.x * shot.w,
+    y: shot.y + target.y * shot.h,
+    w: target.w * shot.w,
+    h: target.h * shot.h,
+  };
 }
 
 /** Ask NVIDIA NIM via Rust so the `.env` key is actually used. */
 export async function askAboutScreen(
   question: string,
   screenshot: string | null,
+  app: string | null,
   signal?: AbortSignal,
 ): Promise<ScreenAskReply> {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   const image = screenshot ? await shrinkScreenshot(screenshot) : null;
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  return askScreen(question, image);
+  return askScreen(question, image, app);
 }

@@ -1,66 +1,88 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
+import { AskWindow, type Turn } from "@/components/overlay/ask-window";
 import { ClickHint } from "@/components/overlay/click-hint";
-import { GuidePill, type GuidePhase } from "@/components/overlay/guide-pill";
 import { useOverlayVoice } from "@/hooks/use-overlay-voice";
 import {
   onHotkeyDown,
   onHotkeyUp,
+  onOverlayHidden,
   overlayHide,
   overlaySetHitRect,
   overlaySetPassthrough,
   wakeSetTranscript,
-  type ClickTarget,
+  windowsList,
+  type AppWindow,
 } from "@/lib/pointy";
-import { askAboutScreen, waitForScreenshot } from "@/lib/screen-ask";
+import { askAboutScreen, grabScreen, targetToScreen } from "@/lib/screen-ask";
 
 /**
- * Phase 3 + 4 overlay: hold to listen, release to ask NIM (screenshot + transcript),
- * Guide-Dot expands into a markdown answer. Empty speech falls back to typing.
+ * The overlay session.
+ *
+ * Wake picks an app, then questions about that app accumulate as a conversation.
+ * The mic only ever opens while `listening` is true, which needs a deliberate
+ * hotkey hold or mic tap — the webview is mounted for the whole process life, so
+ * anything else would record the room in the background.
  */
 export function Overlay() {
-  const [phase, setPhase] = useState<GuidePhase>("listening");
+  const [open, setOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [query, setQuery] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [target, setTarget] = useState<ClickTarget | null>(null);
-  const [indicating, setIndicating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+
+  const [windows, setWindows] = useState<AppWindow[]>([]);
+  const [windowsLoading, setWindowsLoading] = useState(false);
+  const [windowsError, setWindowsError] = useState<string | null>(null);
+
+  const [scope, setScope] = useState<AppWindow | null>(null);
+  const [scopeChosen, setScopeChosen] = useState(false);
+
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [draft, setDraft] = useState("");
+  const [listening, setListening] = useState(false);
+  const [listenGen, setListenGen] = useState(0);
+  const [pointedTurn, setPointedTurn] = useState<number | null>(null);
+  const [copiedTurn, setCopiedTurn] = useState<number | null>(null);
   const [pos, setPos] = useState(() => defaultPos());
-  const pillRef = useRef<HTMLDivElement>(null);
 
-  const listening = phase === "listening";
-  const working = phase !== "listening";
-  const voice = useOverlayVoice(listening);
-
-  const holdGen = useRef(0);
-  const queryRef = useRef("");
-  const abortRef = useRef<AbortController | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const turnSeq = useRef(0);
+  /** False once the user types, so speech stops overwriting their edits. */
+  const dictating = useRef(false);
+
+  const voice = useOverlayVoice(listening, listenGen);
+  const busy = turns.some((turn) => turn.status === "asking");
+
   const posRef = useRef(pos);
+  posRef.current = pos;
   const flushRef = useRef(voice.flush);
   flushRef.current = voice.flush;
-  posRef.current = pos;
+
+  const live = useRef({
+    open,
+    picking,
+    listening,
+    scopeChosen,
+    scope,
+    busy,
+    draft,
+  });
+  live.current = { open, picking, listening, scopeChosen, scope, busy, draft };
+
+  // ---------------------------------------------------------------- plumbing
+
+  // Clicks land on the app underneath except over the card. Kept on while Pointy
+  // is thinking, so the screen never freezes mid-answer.
+  const passthrough = open && !listening && !leaving;
+  useEffect(() => {
+    void overlaySetPassthrough(passthrough);
+  }, [passthrough]);
 
   useEffect(() => {
-    queryRef.current = query;
-  }, [query]);
-
-  useEffect(() => {
-    if (listening && voice.transcript) setQuery(voice.transcript);
-  }, [listening, voice.transcript]);
-
-  useEffect(() => {
-    void overlaySetPassthrough(working && !leaving);
-    return () => {
-      if (!working) void overlaySetPassthrough(false);
-    };
-  }, [working, leaving]);
-
-  useEffect(() => {
-    if (!working || leaving) return;
-    const node = pillRef.current;
+    if (!open || leaving) return;
+    const node = cardRef.current;
     if (!node) return;
 
     const report = () => {
@@ -81,116 +103,260 @@ export function Overlay() {
       observer.disconnect();
       window.clearInterval(timer);
     };
-  }, [working, leaving, phase, pos, answer, query]);
+  }, [open, leaving]);
 
-  const dismiss = useCallback(() => {
-    if (phase === "listening") return;
-    if (indicating) {
-      setIndicating(false);
-      return;
-    }
+  useEffect(() => {
+    if (listening && dictating.current && voice.transcript) setDraft(voice.transcript);
+  }, [listening, voice.transcript]);
+
+  useEffect(() => {
+    if (copiedTurn === null) return;
+    const timer = window.setTimeout(() => setCopiedTurn(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [copiedTurn]);
+
+  // ---------------------------------------------------------------- session
+
+  const loadWindows = useCallback(() => {
+    setWindowsLoading(true);
+    setWindowsError(null);
+    windowsList()
+      .then((found) => setWindows(found))
+      .catch((reason) =>
+        setWindowsError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setWindowsLoading(false));
+  }, []);
+
+  const resetSession = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    setOpen(false);
+    setLeaving(false);
+    setPicking(false);
+    setScope(null);
+    setScopeChosen(false);
+    setTurns([]);
+    setDraft("");
+    setListening(false);
+    setPointedTurn(null);
+    setWindows([]);
+  }, []);
+
+  const close = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setListening(false);
     setLeaving(true);
     window.setTimeout(() => {
       void overlayHide();
-      setLeaving(false);
-    }, 180);
-  }, [phase, indicating]);
+      resetSession();
+    }, 170);
+  }, [resetSession]);
 
-  const ask = useCallback(async (text: string, gen: number) => {
-    const question = text.trim();
-    if (!question) {
-      setPhase("composing");
-      return;
-    }
+  const startListening = useCallback(() => {
+    dictating.current = true;
+    setListenGen((n) => n + 1);
+    setListening(true);
+  }, []);
 
+  /**
+   * Release the mic and return the question as it now stands. Flush runs first
+   * because it owns the audio hardware and produces the final transcript.
+   * `keep` is false when the user has taken over by typing.
+   */
+  const stopListening = useCallback(async (keep = true): Promise<string> => {
+    if (!live.current.listening) return live.current.draft;
+    const heard = await flushRef.current();
+    dictating.current = false;
+    setListening(false);
+    if (!keep) return live.current.draft;
+    if (heard) setDraft(heard);
+    return heard || live.current.draft;
+  }, []);
+
+  // ---------------------------------------------------------------- asking
+
+  const run = useCallback(async (turnId: number, question: string, app: AppWindow | null) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    setPhase("processing");
-    setError(null);
-    setAnswer("");
-    setTarget(null);
-    setIndicating(false);
+
+    const settle = (patch: Partial<Turn>) =>
+      setTurns((current) =>
+        current.map((turn) => (turn.id === turnId ? { ...turn, ...patch } : turn)),
+      );
+
     void wakeSetTranscript(question);
 
     try {
-      const screenshot = await waitForScreenshot();
-      if (holdGen.current !== gen || ctrl.signal.aborted) return;
-      const reply = await askAboutScreen(question, screenshot, ctrl.signal);
-      if (holdGen.current !== gen || ctrl.signal.aborted) return;
-      const body = [reply.answer, reply.advice].filter(Boolean).join("\n\n");
-      setAnswer(body);
-      setTarget(reply.target ?? null);
-      setPhase("answered");
+      const shot = await grabScreen(app?.id ?? null);
+      if (ctrl.signal.aborted) return;
+      const reply = await askAboutScreen(
+        question,
+        shot.image || null,
+        app?.app ?? null,
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) return;
+      settle({
+        status: "done",
+        answer: visibleAnswer(reply.answer, reply.advice),
+        target: reply.target ? targetToScreen(reply.target, shot) : null,
+        error: null,
+      });
     } catch (reason) {
-      if (ctrl.signal.aborted || holdGen.current !== gen) return;
-      const message =
-        reason instanceof Error ? reason.message : "Couldn’t reach NVIDIA NIM. Try again.";
-      setError(message);
-      setPhase("composing");
+      if (ctrl.signal.aborted) return;
+      settle({
+        status: "error",
+        error:
+          reason instanceof Error ? reason.message : "Couldn’t reach NVIDIA NIM. Try again.",
+      });
+    } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
     }
   }, []);
 
+  const send = useCallback(async () => {
+    if (live.current.busy || !live.current.scopeChosen) return;
+
+    const spoken = live.current.listening ? await stopListening() : live.current.draft;
+    const question = (spoken || "").trim();
+    if (!question) return;
+
+    const id = ++turnSeq.current;
+    setDraft("");
+    setPointedTurn(null);
+    setTurns((current) => [
+      ...current,
+      { id, question, answer: "", target: null, status: "asking", error: null },
+    ]);
+    void run(id, question, live.current.scope);
+  }, [run, stopListening]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setTurns((current) =>
+      current.map((turn) => (turn.status === "asking" ? { ...turn, status: "stopped" } : turn)),
+    );
+  }, []);
+
+  const edit = useCallback((turn: Turn) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setTurns((current) => current.filter((kept) => kept.id !== turn.id));
+    setPointedTurn((current) => (current === turn.id ? null : current));
+    setDraft(turn.question);
+  }, []);
+
+  const retry = useCallback(
+    (turn: Turn) => {
+      if (live.current.busy) return;
+      setPointedTurn((current) => (current === turn.id ? null : current));
+      setTurns((current) =>
+        current.map((kept) =>
+          kept.id === turn.id
+            ? { ...kept, status: "asking", answer: "", target: null, error: null }
+            : kept,
+        ),
+      );
+      void run(turn.id, turn.question, live.current.scope);
+    },
+    [run],
+  );
+
+  const pick = useCallback(
+    (chosen: AppWindow | null) => {
+      setScope(chosen);
+      setScopeChosen(true);
+      setPicking(false);
+      startListening();
+    },
+    [startListening],
+  );
+
+  const changeApp = useCallback(() => {
+    void stopListening();
+    setPicking(true);
+    setPointedTurn(null);
+    loadWindows();
+  }, [loadWindows, stopListening]);
+
+  const copy = useCallback((turn: Turn) => {
+    void navigator.clipboard?.writeText(turn.answer).catch(() => {});
+    setCopiedTurn(turn.id);
+  }, []);
+
+  // ---------------------------------------------------------------- hotkey
+
+  const wake = useCallback(() => {
+    if (!live.current.open) {
+      turnSeq.current = 0;
+      setLeaving(false);
+      setTurns([]);
+      setDraft("");
+      setScope(null);
+      setScopeChosen(false);
+      setPointedTurn(null);
+      setPicking(true);
+      setOpen(true);
+      loadWindows();
+      return;
+    }
+    // Already up: a hold is push-to-talk, once there is something to talk about.
+    if (live.current.scopeChosen && !live.current.listening) startListening();
+  }, [loadWindows, startListening]);
+
+  const release = useCallback(() => {
+    if (live.current.listening) void stopListening();
+  }, [stopListening]);
+
+  const hotkeyRef = useRef({ wake, release, resetSession });
+  hotkeyRef.current = { wake, release, resetSession };
+
   useEffect(() => {
-    const unlisteners: Array<() => void> = [];
+    const offs: Array<() => void> = [];
     let cancelled = false;
 
     (async () => {
-      const down = await onHotkeyDown(() => {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        holdGen.current += 1;
-        setLeaving(false);
-        setQuery("");
-        setAnswer("");
-        setTarget(null);
-        setIndicating(false);
-        setError(null);
-        setPhase("listening");
-      });
-      const up = await onHotkeyUp(() => {
-        const gen = holdGen.current;
-        void (async () => {
-          setPhase("processing");
-          const spoken = (await flushRef.current()) || queryRef.current.trim();
-          if (holdGen.current !== gen) return;
-          setQuery(spoken);
-          queryRef.current = spoken;
-          if (!spoken) {
-            setPhase("composing");
-            return;
-          }
-          await ask(spoken, gen);
-        })();
-      });
-
+      const down = await onHotkeyDown(() => hotkeyRef.current.wake());
+      const up = await onHotkeyUp(() => hotkeyRef.current.release());
+      const hidden = await onOverlayHidden(() => hotkeyRef.current.resetSession());
       if (cancelled) {
         down();
         up();
+        hidden();
         return;
       }
-      unlisteners.push(down, up);
+      offs.push(down, up, hidden);
     })();
 
     return () => {
       cancelled = true;
-      unlisteners.forEach((off) => off());
-      abortRef.current?.abort();
+      offs.forEach((off) => off());
     };
-  }, [ask]);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        dismiss();
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (pointedTurn !== null) {
+        setPointedTurn(null);
+        return;
       }
+      if (busy) {
+        stop();
+        return;
+      }
+      close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss]);
+  }, [busy, close, pointedTurn, stop]);
+
+  // ---------------------------------------------------------------- render
 
   const headerProps = {
     onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
@@ -204,8 +370,8 @@ export function Overlay() {
     onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
       if (!dragRef.current) return;
       setPos({
-        x: clamp(event.clientX - dragRef.current.dx, 80, window.innerWidth - 80),
-        y: clamp(event.clientY - dragRef.current.dy, 24, window.innerHeight - 80),
+        x: clamp(event.clientX - dragRef.current.dx, 200, window.innerWidth - 200),
+        y: clamp(event.clientY - dragRef.current.dy, 16, window.innerHeight - 140),
       });
     },
     onPointerUp: () => {
@@ -213,30 +379,30 @@ export function Overlay() {
     },
   };
 
+  const pointed = turns.find((turn) => turn.id === pointedTurn) ?? null;
+
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-transparent">
       <AnimatePresence>
         {!leaving && listening && (
-          <motion.button
+          <motion.div
             key="frost"
-            type="button"
-            aria-label="Dismiss Pointy"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="absolute inset-0 cursor-default"
+            className="absolute inset-0"
             style={{
-              background: "rgba(12, 16, 20, 0.38)",
-              backdropFilter: "blur(18px) saturate(140%)",
-              WebkitBackdropFilter: "blur(18px) saturate(140%)",
+              background: "rgba(12, 16, 20, 0.16)",
+              backdropFilter: "blur(2px)",
+              WebkitBackdropFilter: "blur(2px)",
             }}
           />
         )}
       </AnimatePresence>
 
       <AnimatePresence>
-        {!leaving && indicating && target && (
+        {!leaving && pointed?.target && (
           <motion.div
             key="hint"
             className="absolute inset-0 z-[5]"
@@ -244,15 +410,15 @@ export function Overlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <ClickHint target={target} />
+            <ClickHint target={pointed.target} />
           </motion.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
-        {!leaving && (
+        {!leaving && open && (
           <motion.div
-            key="guide"
+            key="card"
             className="pointer-events-auto absolute z-10"
             style={{ left: pos.x, top: pos.y }}
             initial={{ opacity: 0, y: 12 }}
@@ -260,32 +426,44 @@ export function Overlay() {
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div ref={pillRef} className="absolute top-0 left-0 -translate-x-1/2">
-              <GuidePill
-                phase={phase}
-                query={query}
-                onQueryChange={setQuery}
-                onSubmit={() => void ask(query, holdGen.current)}
-                answer={answer}
-                error={error ?? (listening ? voice.error : null)}
-                target={target}
-                indicating={indicating}
-                onIndicate={() => {
-                  setIndicating((on) => {
-                    if (on) return false;
-                    if (target) {
-                      const mid = (target.x + target.w / 2) * window.innerWidth;
-                      setPos({
-                        x:
-                          mid > window.innerWidth / 2
-                            ? window.innerWidth * 0.22
-                            : window.innerWidth * 0.78,
-                        y: Math.max(72, window.innerHeight * 0.58),
-                      });
-                    }
-                    return true;
-                  });
+            <div ref={cardRef} className="absolute top-0 left-0 -translate-x-1/2">
+              <AskWindow
+                picking={picking}
+                scope={scope}
+                scopeChosen={scopeChosen}
+                windows={windows}
+                windowsLoading={windowsLoading}
+                windowsError={windowsError}
+                onPick={pick}
+                onRefreshWindows={loadWindows}
+                onChangeApp={changeApp}
+                turns={turns}
+                draft={draft}
+                onDraftChange={(value) => {
+                  // Typing takes over from dictation instead of fighting it.
+                  dictating.current = false;
+                  if (live.current.listening) void stopListening(false);
+                  setDraft(value);
                 }}
+                onSend={() => void send()}
+                onStop={stop}
+                busy={busy}
+                listening={listening}
+                bands={voice.bands}
+                onToggleMic={() => {
+                  if (listening) void stopListening();
+                  else startListening();
+                }}
+                micError={listening ? voice.error : null}
+                onEdit={edit}
+                onRetry={retry}
+                pointedTurn={pointedTurn}
+                onTogglePoint={(turn) =>
+                  setPointedTurn((current) => (current === turn.id ? null : turn.id))
+                }
+                copiedTurn={copiedTurn}
+                onCopy={copy}
+                onClose={close}
                 headerProps={headerProps}
               />
             </div>
@@ -299,9 +477,26 @@ export function Overlay() {
 function defaultPos() {
   if (typeof window === "undefined") return { x: 400, y: 280 };
   return {
-    x: window.innerWidth / 2,
-    y: Math.max(80, window.innerHeight * 0.36),
+    x: Math.max(200, window.innerWidth - 220),
+    y: Math.max(24, window.innerHeight * 0.24),
   };
+}
+
+/** Keep model plumbing — JSON, coordinate dumps — out of the glass. */
+function visibleAnswer(answer: string, advice: string) {
+  const main = stripModelJunk(answer);
+  const extra = stripModelJunk(advice);
+  if (!extra || extra === main || /indicate|point it|target\s*:/i.test(extra)) return main;
+  return `${main}\n\n${extra}`;
+}
+
+function stripModelJunk(text: string) {
+  return text
+    .replace(/```json[\s\S]*?```/gi, "")
+    .replace(/target\s*:\s*\{[\s\S]*\}/gi, "")
+    .replace(/\{[^{}]*"label"\s*:[^{}]*\}/g, "")
+    .replace(/click indicate[^\n]*/gi, "")
+    .trim();
 }
 
 function clamp(value: number, min: number, max: number) {

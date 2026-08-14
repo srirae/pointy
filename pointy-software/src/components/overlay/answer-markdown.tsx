@@ -1,17 +1,30 @@
 /** Lightweight markdown for a single NIM answer — not a chat transcript. */
 
-export function AnswerMarkdown({ text }: { text: string }) {
+export function AnswerMarkdown({
+  text,
+  tone = "dark",
+}: {
+  text: string;
+  tone?: "dark" | "light";
+}) {
   const blocks = splitBlocks(text.replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim());
+  const light = tone === "light";
 
   return (
-    <div className="space-y-2.5 text-[0.9375rem] leading-relaxed text-white/90">
+    <div
+      className={
+        light
+          ? "space-y-2.5 text-[0.9375rem] leading-relaxed text-[#2e3a47]"
+          : "space-y-2.5 text-[0.9375rem] leading-relaxed text-white/90"
+      }
+    >
       {blocks.map((block, i) => {
         if (block.type === "list") {
           return (
             <ul key={i} className="list-disc space-y-1 pl-4">
               {block.items.map((item, j) => (
                 <li key={j}>
-                  <Inline text={item} />
+                  <Inline text={item} light={light} />
                 </li>
               ))}
             </ul>
@@ -22,7 +35,7 @@ export function AnswerMarkdown({ text }: { text: string }) {
             <ol key={i} className="list-decimal space-y-1 pl-4">
               {block.items.map((item, j) => (
                 <li key={j}>
-                  <Inline text={item} />
+                  <Inline text={item} light={light} />
                 </li>
               ))}
             </ol>
@@ -30,7 +43,7 @@ export function AnswerMarkdown({ text }: { text: string }) {
         }
         return (
           <p key={i}>
-            <Inline text={block.text} />
+            <Inline text={block.text} light={light} />
           </p>
         );
       })}
@@ -101,14 +114,14 @@ function splitBlocks(raw: string): Block[] {
   return blocks;
 }
 
-function Inline({ text }: { text: string }) {
+function Inline({ text, light = false }: { text: string; light?: boolean }) {
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
   return (
     <>
       {parts.map((part, i) => {
         if (part.startsWith("**") && part.endsWith("**")) {
           return (
-            <strong key={i} className="font-semibold text-white">
+            <strong key={i} className={light ? "font-semibold text-[#0d4a47]" : "font-semibold text-white"}>
               {part.slice(2, -2)}
             </strong>
           );
@@ -117,7 +130,11 @@ function Inline({ text }: { text: string }) {
           return (
             <code
               key={i}
-              className="rounded-md bg-white/8 px-1 py-0.5 font-mono text-[0.8125rem] text-[#ffa61f]"
+              className={
+                light
+                  ? "rounded-md bg-[#0d4a47]/8 px-1 py-0.5 font-mono text-[0.8125rem] text-[#0d4a47]"
+                  : "rounded-md bg-white/8 px-1 py-0.5 font-mono text-[0.8125rem] text-[#ffa61f]"
+              }
             >
               {part.slice(1, -1)}
             </code>

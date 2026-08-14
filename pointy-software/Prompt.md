@@ -74,7 +74,7 @@ Requirements:
 **Goal:** Send the captured screen and spoken text to Nvidia NIM and display the result gracefully on the frosted glass.
 
 ### 🛠️ Manual Work
-1. Ensure your `.env` has `VITE_NVIDIA_NIM_API_KEY`.
+1. Ensure your `.env` has `NVIDIA_API_KEY` (no `VITE_` prefix — that would inline the key into the shipped bundle).
 
 ### 💬 Cursor Prompt 3: AI Processing & Display
 Copy and paste this into Cursor:

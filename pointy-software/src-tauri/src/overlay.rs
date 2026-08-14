@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
+use crate::capture::Shot;
 use crate::Pointy;
 
 pub const LABEL: &str = "overlay";
@@ -69,7 +70,8 @@ pub fn prepare(app: &AppHandle) {
     start_passthrough_poll(app);
 }
 
-/// Hotkey went down: raise the frost immediately, then capture + mic in the background.
+/// Hotkey went down: raise the glass and listen. The screenshot is taken later,
+/// when the user sends the question, so NIM sees the screen at ask time.
 pub fn begin_listen(app: &AppHandle) {
     if !ENABLED.load(Ordering::SeqCst) {
         eprintln!("[pointy] wake ignored — overlay not enabled (finish setup first)");
@@ -78,26 +80,54 @@ pub fn begin_listen(app: &AppHandle) {
 
     set_passthrough(app, false);
     remember_foreground();
-    show_fullscreen(app);
 
-    // Free WASAPI so the overlay can open the mic for speech-to-text. Holding the
-    // capture stream is why Web Speech / getUserMedia never heard anything.
     if let Some(state) = app.try_state::<Pointy>() {
         state.audio.stop_levels();
     }
     OVERLAY_OWNED_MIC.store(false, Ordering::SeqCst);
+    show_fullscreen(app);
+}
 
+/// Hide Pointy, photograph the desktop, then put the glass back.
+/// Call this when the user sends — not on hotkey down/up.
+///
+/// This deliberately leaves `PASSTHROUGH` alone. Clearing it here made the
+/// re-shown overlay grab focus and eat every click, which is why the screen felt
+/// frozen for as long as Pointy was thinking.
+pub fn snapshot_desktop(app: &AppHandle, window_id: Option<u32>) -> Result<Shot, String> {
+    conceal_for_capture(app);
+    // Raise the subject so the crop is not covered by whatever sat on top of it.
+    // Doing this at capture time rather than at pick time leaves Pointy focused
+    // while the user dictates, and leaves their app focused afterwards.
+    if let Some(id) = window_id {
+        focus_hwnd(id);
+    }
+    std::thread::sleep(Duration::from_millis(110));
+
+    let shot = crate::capture::capture(window_id);
+
+    show_fullscreen(app);
+
+    let shot = shot?;
+    if let Some(state) = app.try_state::<Pointy>() {
+        state.wake.remember(&shot);
+    }
+    Ok(shot)
+}
+
+/// Bring the window the user picked to the front so it is what gets captured.
+pub fn focus_app_window(id: u32) {
+    focus_hwnd(id);
+}
+
+/// Hide the overlay without emitting `overlay://hidden` or wiping the wake session.
+fn conceal_for_capture(app: &AppHandle) {
     let handle = app.clone();
-    std::thread::Builder::new()
-        .name("pointy-capture".into())
-        .spawn(move || {
-            if let Some(state) = handle.try_state::<Pointy>() {
-                if let Err(err) = state.wake.begin_capture() {
-                    let _ = handle.emit("capture://error", err);
-                }
-            }
-        })
-        .ok();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = window(&handle) {
+            let _ = window.hide();
+        }
+    });
 }
 
 /// Hotkey went up: stop the microphone only if this overlay opened it.
@@ -141,6 +171,12 @@ pub fn show_fullscreen(app: &AppHandle) {
 pub fn hide(app: &AppHandle) {
     PASSTHROUGH.store(false, Ordering::SeqCst);
     apply_ignore(app, false);
+    if let Some(state) = app.try_state::<Pointy>() {
+        state.audio.stop_levels();
+        state.wake.clear();
+    }
+    OVERLAY_OWNED_MIC.store(false, Ordering::SeqCst);
+    let _ = app.emit("overlay://hidden", ());
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = window(&handle) {
@@ -273,16 +309,37 @@ fn remember_foreground() {}
 
 #[cfg(windows)]
 fn restore_foreground() {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
     let raw = PREV_FOREGROUND.lock().ok().map(|g| *g).unwrap_or(0);
     if raw == 0 {
         return;
     }
-    let hwnd = HWND(raw as *mut std::ffi::c_void);
-    let _ = unsafe { SetForegroundWindow(hwnd) };
+    focus_raw_hwnd(raw);
 }
 
 #[cfg(not(windows))]
 fn restore_foreground() {}
+
+#[cfg(windows)]
+fn focus_hwnd(id: u32) {
+    // xcap reports window ids as the truncated HWND, which is lossless in practice
+    // on Windows — handles stay inside 32 bits.
+    focus_raw_hwnd(id as isize);
+    if let Ok(mut prev) = PREV_FOREGROUND.lock() {
+        *prev = id as isize;
+    }
+}
+
+#[cfg(windows)]
+fn focus_raw_hwnd(raw: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+
+    let hwnd = HWND(raw as *mut std::ffi::c_void);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+#[cfg(not(windows))]
+fn focus_hwnd(_id: u32) {}

@@ -200,9 +200,13 @@ fn overlay_set_hit_rect(rect: overlay::HitRectDto) {
 }
 
 #[tauri::command]
-async fn ask_screen(question: String, screenshot: Option<String>) -> Result<nim::NimReply, String> {
+async fn ask_screen(
+    question: String,
+    screenshot: Option<String>,
+    app: Option<String>,
+) -> Result<nim::NimReply, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        nim::ask_screen(&question, screenshot.as_deref())
+        nim::ask_screen(&question, screenshot.as_deref(), app.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -226,14 +230,27 @@ async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
 
 // -------------------------------------------------------------------- capture
 
-/// Screenshot of the primary monitor as a PNG data URL.
-/// Prefer the shot taken on hotkey-down (before the overlay appeared).
+/// Windows the user can pick as the subject of their question.
 #[tauri::command]
-fn capture_screen(state: State<'_, Pointy>) -> Result<String, String> {
-    if let Some(existing) = state.wake.get().screenshot {
-        return Ok(existing);
-    }
-    state.wake.begin_capture()
+async fn windows_list() -> Result<Vec<capture::AppWindow>, String> {
+    tauri::async_runtime::spawn_blocking(capture::list_windows)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Raise the picked window so it is what the next capture actually shows.
+#[tauri::command]
+fn window_focus(id: u32) {
+    overlay::focus_app_window(id);
+}
+
+/// Fresh screenshot with Pointy hidden, optionally cropped to one window.
+/// Taken when the user sends, not on hotkey.
+#[tauri::command]
+async fn capture_scope(app: AppHandle, window_id: Option<u32>) -> Result<capture::Shot, String> {
+    tauri::async_runtime::spawn_blocking(move || overlay::snapshot_desktop(&app, window_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -318,7 +335,9 @@ pub fn run() {
             overlay_set_hit_rect,
             ask_screen,
             transcribe_wav,
-            capture_screen,
+            windows_list,
+            window_focus,
+            capture_scope,
             wake_session,
             wake_set_transcript,
         ])

@@ -1,13 +1,7 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_NVIDIA_API_KEY?: string;
-  readonly VITE_NVIDIA_NIM_API_KEY?: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
+// The NVIDIA key is deliberately absent here. Anything named VITE_* is inlined
+// into the bundle at build time, so the key is read only by the Rust side.
 
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;

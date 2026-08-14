@@ -20,8 +20,11 @@ function recognitionCtor(): SpeechCtor | null {
 /**
  * Overlay-owned microphone: live levels, live speech-to-text, and a WAV of the hold
  * sent through NVIDIA Whisper when the browser recognizer is silent (WebView2).
+ *
+ * The overlay webview stays mounted for the process lifetime. `active` must be false
+ * until the hotkey goes down, or this hook records the room in the background.
  */
-export function useOverlayVoice(active: boolean) {
+export function useOverlayVoice(active: boolean, generation = 0) {
   const [bands, setBands] = useState<number[]>(SILENT);
   const [level, setLevel] = useState(0);
   const [transcript, setTranscript] = useState("");
@@ -32,6 +35,8 @@ export function useOverlayVoice(active: boolean) {
   const chunksRef = useRef<Float32Array[]>([]);
   const sampleRateRef = useRef(TARGET_RATE);
   const flushRef = useRef<() => Promise<string>>(async () => "");
+  const flushingRef = useRef(false);
+  const sessionRef = useRef(0);
 
   useEffect(() => {
     transcriptRef.current = transcript;
@@ -39,11 +44,21 @@ export function useOverlayVoice(active: boolean) {
 
   useEffect(() => {
     if (!active) {
+      sessionRef.current += 1;
+      if (!flushingRef.current) {
+        chunksRef.current = [];
+        transcriptRef.current = "";
+        setTranscript("");
+        flushRef.current = async () => "";
+      }
       setBands(SILENT);
       setLevel(0);
+      setError(null);
       return;
     }
 
+    const session = generation || ++sessionRef.current;
+    sessionRef.current = session;
     setTranscript("");
     transcriptRef.current = "";
     setError(null);
@@ -56,6 +71,17 @@ export function useOverlayVoice(active: boolean) {
     let rec: SpeechRecognition | null = null;
     let raf = 0;
 
+    const stopHardware = async () => {
+      rec?.stop();
+      rec = null;
+      processor?.disconnect();
+      processor = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      if (audioCtx && audioCtx.state !== "closed") await audioCtx.close().catch(() => {});
+      audioCtx = null;
+    };
+
     (async () => {
       try {
         try {
@@ -66,7 +92,7 @@ export function useOverlayVoice(active: boolean) {
           await new Promise((resolve) => setTimeout(resolve, 220));
           stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
-        if (cancelled) {
+        if (cancelled || sessionRef.current !== session) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
@@ -81,6 +107,7 @@ export function useOverlayVoice(active: boolean) {
 
         processor = audioCtx.createScriptProcessor(4096, 1, 1);
         processor.onaudioprocess = (event) => {
+          if (cancelled || sessionRef.current !== session) return;
           const input = event.inputBuffer.getChannelData(0);
           chunksRef.current.push(new Float32Array(input));
           const maxSamples = sampleRateRef.current * MAX_SECONDS;
@@ -91,7 +118,6 @@ export function useOverlayVoice(active: boolean) {
           }
         };
         source.connect(processor);
-        // Keep the node in the graph without playing the mic through the speakers.
         const mute = audioCtx.createGain();
         mute.gain.value = 0;
         processor.connect(mute);
@@ -120,6 +146,7 @@ export function useOverlayVoice(active: boolean) {
           rec.interimResults = true;
           rec.lang = "en-US";
           rec.onresult = (event: SpeechRecognitionEvent) => {
+            if (sessionRef.current !== session) return;
             let text = "";
             for (let i = 0; i < event.results.length; i++) {
               text += event.results[i]?.[0]?.transcript ?? "";
@@ -150,26 +177,25 @@ export function useOverlayVoice(active: boolean) {
     })();
 
     flushRef.current = async () => {
-      rec?.stop();
-      rec = null;
-      processor?.disconnect();
-      processor = null;
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
-      if (audioCtx && audioCtx.state !== "closed") await audioCtx.close().catch(() => {});
-      audioCtx = null;
-
+      if (sessionRef.current !== session) return "";
+      flushingRef.current = true;
       const live = transcriptRef.current.trim();
-      if (live) return live;
-
       const pcm = concat(chunksRef.current);
+      const rate = sampleRateRef.current;
       chunksRef.current = [];
-      if (pcm.length < sampleRateRef.current * 0.25) return "";
 
-      const wav = encodeWav(pcm, sampleRateRef.current, TARGET_RATE);
+      await stopHardware();
+
+      flushingRef.current = false;
+      if (sessionRef.current !== session && !live && pcm.length === 0) return "";
+
+      if (live) return live;
+      if (pcm.length < rate * 0.25) return "";
+
+      const wav = encodeWav(pcm, rate, TARGET_RATE);
       try {
         const text = (await transcribeWav(bytesToBase64(wav))).trim();
-        if (text) {
+        if (text && sessionRef.current === session) {
           transcriptRef.current = text;
           setTranscript(text);
         }
@@ -188,7 +214,7 @@ export function useOverlayVoice(active: boolean) {
       stream?.getTracks().forEach((track) => track.stop());
       void audioCtx?.close();
     };
-  }, [active]);
+  }, [active, generation]);
 
   return {
     bands,

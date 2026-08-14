@@ -66,6 +66,23 @@ export interface ClickTarget {
   h: number;
 }
 
+/** A window the user can pick as the subject of a question. */
+export interface AppWindow {
+  id: number;
+  app: string;
+  title: string;
+  focused: boolean;
+}
+
+/** A capture plus the slice of the monitor it covers, as 0..1 fractions. */
+export interface Shot {
+  image: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface NimReply {
   answer: string;
   advice: string;
@@ -189,8 +206,14 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "overlay_set_passthrough":
     case "overlay_set_hit_rect":
       return undefined as T;
-    case "capture_screen":
-      return "data:image/png;base64," as T;
+    case "windows_list":
+      return [
+        { id: 1, app: "Preview", title: "Run the desktop app to pick a window", focused: true },
+      ] as T;
+    case "window_focus":
+      return undefined as T;
+    case "capture_scope":
+      return { image: "", x: 0, y: 0, w: 1, h: 1 } as T;
     case "wake_session":
       return { screenshot: null, transcript: "" } as T;
     case "wake_set_transcript":
@@ -272,12 +295,19 @@ export const overlaySetPassthrough = (enabled: boolean) =>
   invoke<void>("overlay_set_passthrough", { enabled });
 export const overlaySetHitRect = (rect: { x: number; y: number; w: number; h: number }) =>
   invoke<void>("overlay_set_hit_rect", { rect });
-export const captureScreen = () => invoke<string>("capture_screen");
+export const windowsList = () => invoke<AppWindow[]>("windows_list");
+export const windowFocus = (id: number) => invoke<void>("window_focus", { id });
+export const captureScope = (windowId?: number | null) =>
+  invoke<Shot>("capture_scope", { windowId: windowId ?? null });
 export const wakeSession = () => invoke<WakeSession>("wake_session");
 export const wakeSetTranscript = (transcript: string) =>
   invoke<void>("wake_set_transcript", { transcript });
-export const askScreen = (question: string, screenshot?: string | null) =>
-  invoke<NimReply>("ask_screen", { question, screenshot: screenshot ?? null });
+export const askScreen = (question: string, screenshot?: string | null, app?: string | null) =>
+  invoke<NimReply>("ask_screen", {
+    question,
+    screenshot: screenshot ?? null,
+    app: app ?? null,
+  });
 export const transcribeWav = (wavBase64: string) =>
   invoke<string>("transcribe_wav", { wavBase64 });
 
@@ -290,6 +320,8 @@ export const onHotkeyDown = (cb: (combo: Combo) => void): Promise<UnlistenFn> =>
   listen<Combo>("hotkey://down", (event) => cb(event.payload));
 export const onHotkeyUp = (cb: (combo: Combo) => void): Promise<UnlistenFn> =>
   listen<Combo>("hotkey://up", (event) => cb(event.payload));
+export const onOverlayHidden = (cb: () => void): Promise<UnlistenFn> =>
+  listen<unknown>("overlay://hidden", () => cb());
 export const onHookFailed = (cb: (reason: string) => void): Promise<UnlistenFn> =>
   listen<string>("hotkey://hook-failed", (event) => cb(event.payload));
 export const onMicLevel = (cb: (level: MicLevel) => void): Promise<UnlistenFn> =>
