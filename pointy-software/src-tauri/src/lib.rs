@@ -12,22 +12,28 @@
 //! * `settings`    — persisted hotkey / device / onboarding state.
 
 mod audio;
+mod capture;
 mod hotkey;
 mod keyboard;
 mod keys;
+mod nim;
 mod overlay;
 mod permissions;
 mod settings;
 
 use audio::{AudioDevice, AudioManager};
+use capture::WakeStore;
 use hotkey::{Combo, HotkeyManager, Validation};
 use permissions::{Capability, PermissionStatus};
 use settings::Settings;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{ShortcutState, Builder as ShortcutBuilder};
+use base64::Engine;
 
-struct Pointy {
-    hotkey: HotkeyManager,
-    audio: AudioManager,
+pub(crate) struct Pointy {
+    pub(crate) hotkey: HotkeyManager,
+    pub(crate) audio: AudioManager,
+    pub(crate) wake: WakeStore,
 }
 
 // ---------------------------------------------------------------- permissions
@@ -101,7 +107,11 @@ fn hotkey_validate(keys: Vec<String>) -> Validation {
 /// Validate, persist and arm a combo. Once armed, holding it emits `hotkey://down`
 /// and releasing emits `hotkey://up`.
 #[tauri::command]
-fn hotkey_save(app: AppHandle, state: State<'_, Pointy>, keys: Vec<String>) -> Result<Combo, String> {
+fn hotkey_save(
+    app: AppHandle,
+    state: State<'_, Pointy>,
+    keys: Vec<String>,
+) -> Result<Combo, String> {
     let validation = hotkey::validate(keys);
     if !validation.valid {
         return Err(validation
@@ -113,6 +123,8 @@ fn hotkey_save(app: AppHandle, state: State<'_, Pointy>, keys: Vec<String>) -> R
     let stored = combo.clone();
     settings::update(&app, |settings| settings.hotkey = Some(stored))?;
     state.hotkey.arm(combo.clone());
+    hotkey::register_os_shortcut(&app, &combo);
+    overlay::set_enabled(&app, true);
     Ok(combo)
 }
 
@@ -124,6 +136,7 @@ fn hotkey_current(state: State<'_, Pointy>) -> Option<Combo> {
 #[tauri::command]
 fn hotkey_clear(app: AppHandle, state: State<'_, Pointy>) -> Result<(), String> {
     state.hotkey.disarm();
+    hotkey::unregister_os_shortcuts(&app);
     settings::update(&app, |settings| settings.hotkey = None).map(|_| ())
 }
 
@@ -141,36 +154,141 @@ fn settings_finish_onboarding(app: AppHandle) -> Result<Settings, String> {
     Ok(settings)
 }
 
+#[tauri::command]
+fn settings_reset(app: AppHandle, state: State<'_, Pointy>) -> Result<Settings, String> {
+    state.hotkey.disarm();
+    hotkey::unregister_os_shortcuts(&app);
+    state.audio.stop_levels();
+    overlay::set_enabled(&app, false);
+    let settings = Settings::default();
+    settings::save(&app, &settings)?;
+    Ok(settings)
+}
+
 // -------------------------------------------------------------------- overlay
 
-/// Arm or silence the push-to-talk pill. The setup window silences it while onboarding
-/// is on screen, because that step drives the one microphone stream itself.
+/// Arm or silence hold-to-wake. The overlay stays hidden until the hotkey is held.
 #[tauri::command]
 fn overlay_set_enabled(app: AppHandle, enabled: bool) {
     overlay::set_enabled(&app, enabled);
 }
 
+#[tauri::command]
+fn overlay_hide(app: AppHandle) {
+    overlay::hide(&app);
+}
+
+/// Main-thread wake — the dashboard calls this so Windows actually shows the overlay.
+#[tauri::command]
+fn overlay_wake(app: AppHandle) {
+    overlay::begin_listen(&app);
+}
+
+#[tauri::command]
+fn overlay_rest(app: AppHandle) {
+    overlay::end_listen(&app);
+}
+
+#[tauri::command]
+fn overlay_set_passthrough(app: AppHandle, enabled: bool) {
+    overlay::set_passthrough(&app, enabled);
+}
+
+#[tauri::command]
+fn overlay_set_hit_rect(rect: overlay::HitRectDto) {
+    overlay::set_hit_rect(rect);
+}
+
+#[tauri::command]
+async fn ask_screen(question: String, screenshot: Option<String>) -> Result<nim::NimReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nim::ask_screen(&question, screenshot.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let raw = wav_base64
+            .split_once(',')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or(wav_base64);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw.trim())
+            .map_err(|e| format!("Bad audio payload: {e}"))?;
+        nim::transcribe_wav(&bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// -------------------------------------------------------------------- capture
+
+/// Screenshot of the primary monitor as a PNG data URL.
+/// Prefer the shot taken on hotkey-down (before the overlay appeared).
+#[tauri::command]
+fn capture_screen(state: State<'_, Pointy>) -> Result<String, String> {
+    if let Some(existing) = state.wake.get().screenshot {
+        return Ok(existing);
+    }
+    state.wake.begin_capture()
+}
+
+#[tauri::command]
+fn wake_session(state: State<'_, Pointy>) -> capture::WakeSession {
+    state.wake.get()
+}
+
+#[tauri::command]
+fn wake_set_transcript(state: State<'_, Pointy>, transcript: String) {
+    state.wake.set_transcript(transcript);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(
+            ShortcutBuilder::new()
+                .with_handler(|app, _shortcut, event| match event.state() {
+                    ShortcutState::Pressed => {
+                        overlay::begin_listen(app);
+                        if let Some(combo) = settings::load(app).hotkey {
+                            let _ = app.emit("hotkey://down", combo);
+                        }
+                    }
+                    ShortcutState::Released => {
+                        overlay::end_listen(app);
+                        if let Some(combo) = settings::load(app).hotkey {
+                            let _ = app.emit("hotkey://up", combo);
+                        }
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let state = Pointy {
                 hotkey: HotkeyManager::start(handle.clone()),
                 audio: AudioManager::new(),
+                wake: WakeStore::new(),
             };
 
             let stored = settings::load(&handle);
 
             // A hotkey recorded in a previous run is live from launch.
-            if let Some(combo) = stored.hotkey {
-                state.hotkey.arm(combo);
+            if let Some(combo) = stored.hotkey.clone() {
+                state.hotkey.arm(combo.clone());
+                hotkey::register_os_shortcut(&handle, &combo);
             }
 
-            // The pill exists from launch; it only becomes visible once setup is done.
+            // The overlay window exists from launch. Enable as soon as a hotkey is
+            // saved — otherwise Speak never shows glass (onboarding_complete is still false).
             overlay::prepare(&handle);
-            overlay::set_enabled(&handle, stored.onboarding_complete);
+            overlay::set_enabled(&handle, stored.hotkey.is_some());
 
             app.manage(state);
             Ok(())
@@ -191,7 +309,18 @@ pub fn run() {
             hotkey_clear,
             settings_get,
             settings_finish_onboarding,
+            settings_reset,
             overlay_set_enabled,
+            overlay_hide,
+            overlay_wake,
+            overlay_rest,
+            overlay_set_passthrough,
+            overlay_set_hit_rect,
+            ask_screen,
+            transcribe_wav,
+            capture_screen,
+            wake_session,
+            wake_set_transcript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

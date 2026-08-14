@@ -28,14 +28,16 @@ function canonical(keys: string[]): string[] {
 function validate(keys: string[]): Validation {
   const combo = { keys: canonical(keys) };
   const modifiers = combo.keys.filter((k) => MODIFIERS.has(k)).length;
-  const plain = combo.keys.length - modifiers;
+  const first = combo.keys[0] ?? "";
+  const isFn = /^F([1-9]|1[0-2])$/.test(first);
 
   let reason: string | null = null;
   if (combo.keys.length === 0) reason = "Press the keys you want to use.";
-  else if (modifiers === 0) reason = "Add a modifier — Ctrl, Alt, Shift or Win.";
-  else if (plain > 1) reason = "Use one regular key at most, plus modifiers.";
-  else if (plain === 0 && modifiers < 2) {
-    reason = "A single modifier fires too easily. Use two modifiers, or add a key.";
+  else if (combo.keys.length > 4) reason = "Keep it to 4 keys or fewer.";
+  else if (combo.keys.length === 1 && modifiers === 1) {
+    reason = "A single modifier fires too easily. Add another key.";
+  } else if (combo.keys.length === 1 && !isFn) {
+    reason = "Add a modifier — Ctrl, Alt, Shift or Win — so this doesn’t fire while you type.";
   }
 
   return { valid: reason === null, reason, combo };

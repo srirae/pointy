@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 
-import { AllSet } from "@/components/onboarding/all-set";
+import { Dashboard } from "@/components/dashboard/dashboard";
 import { Atmosphere } from "@/components/onboarding/atmosphere";
 import { StepTabs, type StepId } from "@/components/onboarding/step-tabs";
 import { Explain } from "@/onboarding/explain";
@@ -10,7 +10,20 @@ import { Hotkey } from "@/onboarding/hotkey";
 import { WakeSpeak } from "@/onboarding/wake-speak";
 import { Welcome } from "@/onboarding/welcome";
 import { nextStep, prevStep } from "@/lib/onboarding-flow";
-import { overlaySetEnabled, settingsGet, type Combo } from "@/lib/pointy";
+import { registerGlobalHotkey, unregisterGlobalHotkeys } from "@/lib/global-shortcut";
+import {
+  overlaySetEnabled,
+  settingsFinishOnboarding,
+  settingsGet,
+  settingsReset,
+  type Combo,
+} from "@/lib/pointy";
+import {
+  loadPersisted,
+  markSetupComplete,
+  saveOnboardingStep,
+  wipeSetup,
+} from "@/lib/store";
 
 type View = { kind: "loading" } | { kind: "onboarding"; step: StepId } | { kind: "home" };
 
@@ -19,24 +32,60 @@ export default function App() {
   const [combo, setCombo] = useState<Combo | null>(null);
 
   useEffect(() => {
-    settingsGet()
-      .then((settings) => {
-        setCombo(settings.hotkey);
-        setView(
-          settings.onboarding_complete && settings.hotkey
-            ? { kind: "home" }
-            : { kind: "onboarding", step: "welcome" },
-        );
-      })
-      .catch(() => setView({ kind: "onboarding", step: "welcome" }));
+    (async () => {
+      try {
+        const persisted = await loadPersisted();
+        const settings = await settingsGet().catch(() => null);
+        const keys = persisted.customHotkey ?? settings?.hotkey?.keys ?? null;
+        const complete = persisted.hasCompletedSetup || Boolean(settings?.onboarding_complete && keys);
+
+        if (keys?.length) {
+          setCombo({ keys });
+          void registerGlobalHotkey(keys).catch(() => {});
+        }
+
+        if (complete && keys?.length) {
+          setCombo({ keys });
+          await markSetupComplete({ keys });
+          setView({ kind: "home" });
+          return;
+        }
+
+        const step = persisted.onboardingStep && persisted.onboardingStep !== "welcome"
+          ? persisted.onboardingStep
+          : "welcome";
+        setView({ kind: "onboarding", step: keys && step === "speak" ? "speak" : step });
+      } catch {
+        setView({ kind: "onboarding", step: "welcome" });
+      }
+    })();
   }, []);
 
-  // The pill and the onboarding meter share one microphone stream, so only one of them
-  // may be live at a time: silence the pill for as long as setup is on screen.
   useEffect(() => {
     if (view.kind === "loading") return;
-    void overlaySetEnabled(view.kind === "home");
-  }, [view.kind]);
+    const enable =
+      view.kind === "home" || (view.kind === "onboarding" && view.step === "speak");
+    void overlaySetEnabled(enable);
+  }, [view]);
+
+  const go = (step: StepId) => {
+    setView({ kind: "onboarding", step });
+    void saveOnboardingStep(step);
+  };
+
+  const finishSetup = async () => {
+    if (combo) await markSetupComplete(combo);
+    await settingsFinishOnboarding();
+    setView({ kind: "home" });
+  };
+
+  const setupAgain = async () => {
+    await wipeSetup();
+    await unregisterGlobalHotkeys();
+    await settingsReset();
+    setCombo(null);
+    setView({ kind: "onboarding", step: "welcome" });
+  };
 
   if (view.kind === "loading") {
     return (
@@ -49,14 +98,10 @@ export default function App() {
 
   if (view.kind === "home") {
     return (
-      <AllSet
-        combo={combo}
-        onSetupAgain={() => setView({ kind: "onboarding", step: "welcome" })}
-      />
+      <Dashboard combo={combo} onComboChange={setCombo} onSetupAgain={() => void setupAgain()} />
     );
   }
 
-  const go = (step: StepId) => setView({ kind: "onboarding", step });
   const goNext = () => {
     const next = nextStep(view.step);
     if (next) go(next);
@@ -83,9 +128,7 @@ export default function App() {
           >
             {view.step === "welcome" && <Welcome onNext={goNext} />}
 
-            {view.step === "explain" && (
-              <Explain onBack={goBack} onNext={goNext} />
-            )}
+            {view.step === "explain" && <Explain onBack={goBack} onNext={goNext} />}
 
             {view.step === "hotkey" && (
               <Hotkey
@@ -97,7 +140,7 @@ export default function App() {
             )}
 
             {view.step === "speak" && combo && (
-              <WakeSpeak combo={combo} onBack={goBack} onFinish={() => setView({ kind: "home" })} />
+              <WakeSpeak combo={combo} onBack={goBack} onFinish={() => void finishSetup()} />
             )}
 
             {view.step === "speak" && !combo && (
@@ -120,4 +163,3 @@ export default function App() {
     </div>
   );
 }
-

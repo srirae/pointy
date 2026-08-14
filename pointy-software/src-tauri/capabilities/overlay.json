@@ -1,12 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Capability for the push-to-talk pill window. It listens for hotkey/mic events and hides itself once the release animation finishes.",
+  "description": "Capability for the full-screen frost overlay. It listens for hotkey/mic events and hides itself after the processing beat.",
   "windows": ["overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
     "core:window:allow-show",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
     "core:window:allow-set-ignore-cursor-events"
   ]
 }

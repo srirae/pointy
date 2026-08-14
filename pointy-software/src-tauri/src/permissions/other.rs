@@ -8,7 +8,10 @@ pub fn status(capability: Capability) -> PermissionStatus {
     match capability {
         Capability::Microphone => {
             let (state, detail) = match probe_microphone() {
-                MicProbe::Ok => (State::Granted, "Microphone opened successfully.".to_string()),
+                MicProbe::Ok => (
+                    State::Granted,
+                    "Microphone opened successfully.".to_string(),
+                ),
                 MicProbe::Denied(detail) => (State::Denied, detail),
                 MicProbe::Unavailable(detail) => (State::Unknown, detail),
             };

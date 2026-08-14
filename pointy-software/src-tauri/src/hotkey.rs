@@ -36,7 +36,9 @@ pub struct Combo {
 
 impl Combo {
     pub fn new(keys: Vec<String>) -> Self {
-        Self { keys: canonical(keys) }
+        Self {
+            keys: canonical(keys),
+        }
     }
 
     pub fn label(&self) -> String {
@@ -61,34 +63,24 @@ pub struct Validation {
     pub combo: Combo,
 }
 
-/// Combos the OS or the window manager takes first — binding them produces a hotkey
-/// that fires unreliably or not at all, so they are refused at capture time.
+/// Combos the OS swallows — binding them never fires reliably.
 const RESERVED: &[&str] = &[
     "Ctrl+Alt+Delete",
     "Ctrl+Shift+Escape",
-    "Ctrl+Escape",
     "Alt+Tab",
     "Alt+Shift+Tab",
-    "Alt+F4",
-    "Alt+Space",
     "Win+L",
-    "Win+Tab",
-    "Win+D",
-    "Win+E",
-    "Win+R",
-    "Win+X",
-    "Win+I",
-    "Win+A",
-    "Win+S",
-    "Win+V",
-    "Win+P",
-    "Win+G",
-    "Win+H",
-    "Win+K",
-    "Win+M",
 ];
 
-const MAX_KEYS: usize = 3;
+const MAX_KEYS: usize = 4;
+
+fn is_function_key(token: &str) -> bool {
+    token
+        .strip_prefix('F')
+        .and_then(|rest| rest.parse::<u8>().ok())
+        .map(|n| (1..=12).contains(&n))
+        .unwrap_or(false)
+}
 
 /// Canonical ordering: modifiers in Ctrl, Alt, Shift, Win order, then the main key.
 /// Duplicates collapse; order of pressing does not matter.
@@ -105,7 +97,7 @@ pub fn canonical(keys: Vec<String>) -> Vec<String> {
 pub fn validate(keys: Vec<String>) -> Validation {
     let combo = Combo::new(keys);
     let modifiers = combo.keys.iter().filter(|k| keys::is_modifier(k)).count();
-    let plain = combo.keys.len() - modifiers;
+    let first = combo.keys.first().map(String::as_str).unwrap_or("");
 
     let reason = if combo.keys.is_empty() {
         Some("Press the keys you want to use.".to_string())
@@ -113,15 +105,13 @@ pub fn validate(keys: Vec<String>) -> Validation {
         Some(format!(
             "Keep it to {MAX_KEYS} keys or fewer — longer combos are awkward to hold."
         ))
-    } else if modifiers == 0 {
+    } else if combo.keys.len() == 1 && modifiers == 1 {
+        Some("A single modifier fires too easily. Add another key.".to_string())
+    } else if combo.keys.len() == 1 && !is_function_key(first) {
         Some(
-            "Add a modifier — Ctrl, Alt, Shift or Win. A plain key would fire while you type."
+            "Add a modifier — Ctrl, Alt, Shift or Win — so this doesn’t fire while you type."
                 .to_string(),
         )
-    } else if plain > 1 {
-        Some("Use one regular key at most, plus modifiers.".to_string())
-    } else if plain == 0 && modifiers < 2 {
-        Some("A single modifier fires too easily. Use two modifiers, or add a key.".to_string())
     } else if RESERVED.contains(&combo.id().as_str()) {
         Some(format!(
             "{} already belongs to the system. Try another combo.",
@@ -206,12 +196,9 @@ impl Inner {
             }
             Mode::Armed(combo) => {
                 let pressed = self.pressed.lock().unwrap().clone();
-                if combo.is_held_by(&pressed)
-                    && !self.armed_down.swap(true, Ordering::SeqCst)
-                {
-                    // Show first, emit second: the pill has to be on screen before the
-                    // webview has any work to do, or the hold feels laggy.
-                    crate::overlay::show(&self.app);
+                if combo.is_held_by(&pressed) && !self.armed_down.swap(true, Ordering::SeqCst) {
+                    // Show + open the mic in Rust first, then tell the webviews.
+                    crate::overlay::begin_listen(&self.app);
                     let _ = self.app.emit("hotkey://down", combo);
                 }
             }
@@ -252,6 +239,7 @@ impl Inner {
                 if combo.keys.iter().any(|k| k == token)
                     && self.armed_down.swap(false, Ordering::SeqCst)
                 {
+                    crate::overlay::end_listen(&self.app);
                     let _ = self.app.emit("hotkey://up", combo);
                 }
             }
@@ -294,9 +282,16 @@ impl HotkeyManager {
 
     pub fn stop_capture(&self) {
         let mut mode = self.inner.mode.lock().unwrap();
-        if matches!(*mode, Mode::Capture) {
-            *mode = Mode::Idle;
+        if !matches!(*mode, Mode::Capture) {
+            return;
         }
+        // Leaving the hotkey step used to drop the hook to Idle. Speak then never
+        // saw hotkey-down, so the overlay never woke and Continue stayed locked.
+        *mode = crate::settings::load(&self.inner.app)
+            .hotkey
+            .map(Mode::Armed)
+            .unwrap_or(Mode::Idle);
+        self.inner.armed_down.store(false, Ordering::SeqCst);
     }
 
     pub fn arm(&self, combo: Combo) {
@@ -317,6 +312,49 @@ impl HotkeyManager {
     }
 }
 
+/// Best-effort OS accelerator. The keyboard hook is the real wake path and accepts
+/// any combo; this only helps when the OS can claim the shortcut.
+pub fn register_os_shortcut(app: &AppHandle, combo: &Combo) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+        let accel = combo
+            .keys
+            .iter()
+            .map(|key| match key.as_str() {
+                "Ctrl" => "Control",
+                "Win" => "Super",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join("+");
+
+        let Ok(shortcut) = accel.parse::<Shortcut>() else {
+            return;
+        };
+
+        let _ = app.global_shortcut().unregister_all();
+        let _ = app.global_shortcut().register(shortcut);
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (app, combo);
+    }
+}
+
+pub fn unregister_os_shortcuts(app: &AppHandle) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let _ = app.global_shortcut().unregister_all();
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = app;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,7 +365,10 @@ mod tests {
 
     #[test]
     fn canonical_orders_modifiers_then_key_and_dedupes() {
-        assert_eq!(canonical(keys(&["P", "Shift", "Ctrl"])), keys(&["Ctrl", "Shift", "P"]));
+        assert_eq!(
+            canonical(keys(&["P", "Shift", "Ctrl"])),
+            keys(&["Ctrl", "Shift", "P"])
+        );
         assert_eq!(canonical(keys(&["Win", "Ctrl"])), keys(&["Ctrl", "Win"]));
         assert_eq!(canonical(keys(&["Ctrl", "Ctrl"])), keys(&["Ctrl"]));
     }
@@ -345,10 +386,13 @@ mod tests {
         assert!(validate(keys(&["Ctrl", "Shift", "P"])).valid);
         assert!(validate(keys(&["Ctrl", "Win"])).valid);
         assert!(validate(keys(&["Ctrl", "Alt", "P"])).valid);
+        assert!(validate(keys(&["Ctrl", "Shift", "Space"])).valid);
+        assert!(validate(keys(&["F8"])).valid);
+        assert!(validate(keys(&["Ctrl", "P", "K"])).valid);
     }
 
     #[test]
-    fn rejects_a_bare_key() {
+    fn rejects_a_bare_letter() {
         let result = validate(keys(&["P"]));
         assert!(!result.valid);
         assert!(result.reason.unwrap().contains("modifier"));
@@ -361,13 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_more_than_one_regular_key() {
-        assert!(!validate(keys(&["Ctrl", "P", "K"])).valid);
-    }
-
-    #[test]
-    fn rejects_more_than_three_keys() {
-        assert!(!validate(keys(&["Ctrl", "Alt", "Shift", "P"])).valid);
+    fn accepts_four_keys_but_not_five() {
+        assert!(validate(keys(&["Ctrl", "Alt", "Shift", "P"])).valid);
+        assert!(!validate(keys(&["Ctrl", "Alt", "Shift", "Win", "P"])).valid);
     }
 
     #[test]

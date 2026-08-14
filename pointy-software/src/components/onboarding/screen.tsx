@@ -14,6 +14,7 @@ export function Screen({
   onBack,
   children,
   footnote,
+  progressHint,
   wide = false,
 }: {
   title: string;
@@ -21,6 +22,7 @@ export function Screen({
   onBack?: () => void;
   children: ReactNode;
   footnote?: ReactNode;
+  progressHint?: string;
   wide?: boolean;
 }) {
   return (
@@ -37,6 +39,16 @@ export function Screen({
           <ArrowLeft className="size-4" aria-hidden />
           Back
         </motion.button>
+      )}
+
+      {progressHint && (
+        <motion.p
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="absolute top-9 right-9 text-[0.6875rem] font-semibold tracking-[0.14em] uppercase text-muted-foreground/80"
+        >
+          {progressHint}
+        </motion.p>
       )}
 
       <div

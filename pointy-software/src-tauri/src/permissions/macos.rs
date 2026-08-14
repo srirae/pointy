@@ -126,12 +126,15 @@ fn screen() -> PermissionStatus {
     let granted = unsafe { CGPreflightScreenCaptureAccess() };
     PermissionStatus {
         id: Capability::Screen.id(),
-        state: if granted { State::Granted } else { State::Denied },
+        state: if granted {
+            State::Granted
+        } else {
+            State::Denied
+        },
         detail: if granted {
             "Screen recording permission granted.".to_string()
         } else {
-            "macOS needs Screen Recording permission before Pointy can read the screen."
-                .to_string()
+            "macOS needs Screen Recording permission before Pointy can read the screen.".to_string()
         },
         can_open_settings: true,
     }
@@ -141,7 +144,11 @@ fn accessibility() -> PermissionStatus {
     let trusted = unsafe { AXIsProcessTrusted() };
     PermissionStatus {
         id: Capability::Accessibility.id(),
-        state: if trusted { State::Granted } else { State::Denied },
+        state: if trusted {
+            State::Granted
+        } else {
+            State::Denied
+        },
         detail: if trusted {
             "Accessibility access granted — Pointy can locate the exact element to point at."
                 .to_string()

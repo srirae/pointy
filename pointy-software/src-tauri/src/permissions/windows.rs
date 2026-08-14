@@ -75,9 +75,10 @@ fn microphone() -> PermissionStatus {
             State::Denied,
             "Windows is blocking microphone access for this app.".to_string(),
         ),
-        Some(status) if status == AppCapabilityAccessStatus::Allowed => {
-            (State::Granted, "Microphone access allowed by Windows.".to_string())
-        }
+        Some(status) if status == AppCapabilityAccessStatus::Allowed => (
+            State::Granted,
+            "Microphone access allowed by Windows.".to_string(),
+        ),
         // NotDeclaredByApp / UserPromptRequired / unreadable: an unpackaged build has
         // no capability manifest to read, so fall through to opening the device.
         _ => match probe_microphone() {
@@ -129,10 +130,7 @@ fn screen() -> PermissionStatus {
                     "Screen capture verified — Pointy can read the screen when you ask it to."
                         .to_string(),
                 ),
-                Err(err) => (
-                    State::Denied,
-                    format!("Screen capture failed: {err}"),
-                ),
+                Err(err) => (State::Denied, format!("Screen capture failed: {err}")),
             }
         }
     };
@@ -176,7 +174,11 @@ fn accessibility() -> PermissionStatus {
             }
             outcome
         })
-        .and_then(|handle| handle.join().map_err(|_| std::io::Error::other("probe panicked")));
+        .and_then(|handle| {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("probe panicked"))
+        });
 
     let (state, detail) = match result {
         Ok(Ok(_)) => (

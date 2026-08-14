@@ -9,6 +9,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { isTauri } from "@/lib/tauri";
+import { registerGlobalHotkey } from "@/lib/global-shortcut";
 
 export type PermissionId = "microphone" | "screen" | "accessibility";
 export type PermissionState = "granted" | "denied" | "prompt" | "unknown";
@@ -46,10 +47,29 @@ export interface MicLevel {
   device: string;
 }
 
+export interface WakeSession {
+  screenshot: string | null;
+  transcript: string;
+}
+
 export interface Settings {
   hotkey: Combo | null;
   input_device: string | null;
   onboarding_complete: boolean;
+}
+
+export interface ClickTarget {
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface NimReply {
+  answer: string;
+  advice: string;
+  target: ClickTarget | null;
 }
 
 /** Number of bars the backend analyses. Keep in sync with audio::BANDS. */
@@ -151,9 +171,38 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "settings_finish_onboarding":
       preview.settings.onboarding_complete = true;
       return { ...preview.settings } as T;
-    case "overlay_set_enabled":
-      // No second window in browser preview — nothing to arm.
+    case "settings_reset":
+      preview.settings = {
+        hotkey: null,
+        input_device: "Default Microphone",
+        onboarding_complete: false,
+      };
+      return { ...preview.settings } as T;
+    case "hotkey_clear":
+      preview.settings.hotkey = null;
       return undefined as T;
+    case "overlay_set_enabled":
+      return undefined as T;
+    case "overlay_wake":
+    case "overlay_rest":
+    case "overlay_hide":
+    case "overlay_set_passthrough":
+    case "overlay_set_hit_rect":
+      return undefined as T;
+    case "capture_screen":
+      return "data:image/png;base64," as T;
+    case "wake_session":
+      return { screenshot: null, transcript: "" } as T;
+    case "wake_set_transcript":
+      return undefined as T;
+    case "ask_screen":
+      return {
+        answer: "Preview mode — NVIDIA NIM runs in the desktop app.",
+        advice: "Hold your hotkey in the Tauri window.",
+        target: null,
+      } as T;
+    case "transcribe_wav":
+      return "" as T;
     default:
       throw new Error(`Preview mode has no handler for “${cmd}”.`);
   }
@@ -193,13 +242,44 @@ export const hotkeyValidate = (keys: string[]) => invoke<Validation>("hotkey_val
 export const hotkeySave = (keys: string[]) => invoke<Combo>("hotkey_save", { keys });
 export const hotkeyCurrent = () => invoke<Combo | null>("hotkey_current");
 
+/** Persist and arm the wake combo. OS accelerator registration is best-effort. */
+export async function registerAndSaveHotkey(keys: string[]): Promise<Combo> {
+  const saved = await hotkeySave(keys);
+  const { saveHotkey } = await import("@/lib/store");
+  await saveHotkey(saved.keys);
+  try {
+    await registerGlobalHotkey(keys);
+  } catch {
+    // The Rust keyboard hook is already armed. Plugin ACL or unsupported
+    // accelerators must not block saving a hotkey.
+  }
+  return saved;
+}
+
 // settings
 export const settingsGet = () => invoke<Settings>("settings_get");
 export const settingsFinishOnboarding = () => invoke<Settings>("settings_finish_onboarding");
+export const settingsReset = () => invoke<Settings>("settings_reset");
+export const hotkeyClear = () => invoke<void>("hotkey_clear");
 
 // overlay
 export const overlaySetEnabled = (enabled: boolean) =>
   invoke<void>("overlay_set_enabled", { enabled });
+export const overlayHide = () => invoke<void>("overlay_hide");
+export const overlayWake = () => invoke<void>("overlay_wake");
+export const overlayRest = () => invoke<void>("overlay_rest");
+export const overlaySetPassthrough = (enabled: boolean) =>
+  invoke<void>("overlay_set_passthrough", { enabled });
+export const overlaySetHitRect = (rect: { x: number; y: number; w: number; h: number }) =>
+  invoke<void>("overlay_set_hit_rect", { rect });
+export const captureScreen = () => invoke<string>("capture_screen");
+export const wakeSession = () => invoke<WakeSession>("wake_session");
+export const wakeSetTranscript = (transcript: string) =>
+  invoke<void>("wake_set_transcript", { transcript });
+export const askScreen = (question: string, screenshot?: string | null) =>
+  invoke<NimReply>("ask_screen", { question, screenshot: screenshot ?? null });
+export const transcribeWav = (wavBase64: string) =>
+  invoke<string>("transcribe_wav", { wavBase64 });
 
 // events
 export const onCaptureProgress = (cb: (update: CaptureUpdate) => void): Promise<UnlistenFn> =>

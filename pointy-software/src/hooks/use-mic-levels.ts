@@ -14,8 +14,15 @@ const SILENT = Array<number>(BAND_COUNT).fill(0);
 
 /**
  * Subscribe to live input levels from Rust (Tauri) or Web Audio (browser preview).
+ *
+ * `listenOnly` subscribes to `mic://level` without opening a second capture stream —
+ * used by the overlay and dashboard when Rust already starts the mic on hotkey down.
  */
-export function useMicLevels(enabled: boolean, device?: string | null) {
+export function useMicLevels(
+  enabled: boolean,
+  device?: string | null,
+  listenOnly = false,
+) {
   const [bands, setBands] = useState<number[]>(SILENT);
   const [level, setLevel] = useState(0);
   const [openedDevice, setOpenedDevice] = useState<string | null>(null);
@@ -54,6 +61,11 @@ export function useMicLevels(enabled: boolean, device?: string | null) {
             }),
           );
           unlisteners.push(await onMicError(setError));
+
+          if (listenOnly) {
+            setError(null);
+            return;
+          }
 
           const opened = await audioStartLevels(device);
           if (cancelled) {
@@ -115,9 +127,9 @@ export function useMicLevels(enabled: boolean, device?: string | null) {
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((t) => t.stop());
       void audioCtx?.close();
-      if (isTauri()) void audioStopLevels();
+      if (isTauri() && !listenOnly) void audioStopLevels();
     };
-  }, [enabled, device]);
+  }, [enabled, device, listenOnly]);
 
   return { bands, level, peak, openedDevice, error };
 }

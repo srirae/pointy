@@ -206,8 +206,8 @@ impl Analyser {
             .enumerate()
             .map(|(i, s)| {
                 // Hann window: without it, band energy smears across the spectrum.
-                let w = 0.5
-                    - 0.5 * (std::f32::consts::TAU * i as f32 / (FFT_SIZE as f32 - 1.0)).cos();
+                let w =
+                    0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (FFT_SIZE as f32 - 1.0)).cos();
                 Complex32::new(s * w, 0.0)
             })
             .collect();

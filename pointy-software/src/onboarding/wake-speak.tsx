@@ -7,11 +7,11 @@ import { HotkeyCombo } from "@/components/hotkey-combo";
 import { MicShowcaseVisual } from "@/components/onboarding/mic-showcase-visual";
 import { Card, CardQuestion, Screen } from "@/components/onboarding/screen";
 import { StepNav } from "@/components/onboarding/step-nav";
-import { Button } from "@/components/ui/button";
 import { VoiceButton, type VoiceButtonState } from "@/components/ui/voice-button";
 import { useHotkeyPress } from "@/hooks/use-hotkey";
 import { useMicLevels } from "@/hooks/use-mic-levels";
-import { permissionsRequest, permissionsStatus, settingsFinishOnboarding, type Combo } from "@/lib/pointy";
+import { requestMicrophoneAccess } from "@/lib/microphone";
+import { hotkeySave, type Combo } from "@/lib/pointy";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
  * `audio.rs`, which already maps a −62 dB floor onto 0..1, so this is well clear of a
  * quiet room but reachable by anyone speaking normally.
  */
-const HEARD_LEVEL = 0.08;
+const HEARD_LEVEL = 0.012;
 
 /**
  * Step 4 — hold the hotkey, speak, and watch the meter move.
@@ -37,29 +37,33 @@ export function WakeSpeak({
 }: {
   combo: Combo;
   onBack: () => void;
-  onFinish: () => void;
+  onFinish: () => void | Promise<void>;
 }) {
   const { held } = useHotkeyPress(true);
   // The microphone opens with the step, not with the hold. Opening a WASAPI stream
   // takes a moment, so starting it on key-down meant a short press showed flat bars and
   // no error — indistinguishable from "Pointy cannot hear you".
-  const { bands, level, openedDevice, error: micError } = useMicLevels(true);
+  const { bands, level, peak, openedDevice, error: micError } = useMicLevels(true);
 
   const [busy, setBusy] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceButtonState>("idle");
-  // One flag for the whole test: the hotkey went down *and* we picked up a voice while
-  // it was held. Tracking it only during the hold is what makes it a real check — the
-  // meter runs the whole time this step is open, so background noise alone must not
-  // count as a pass.
   const [heard, setHeard] = useState(false);
 
   const detected = Boolean(openedDevice) && !micError;
-  const ready = detected && heard;
+
+  // Re-arm after the hotkey step — leaving that screen can drop Capture mode and
+  // leave the combo idle, so Ctrl+Win never wakes the overlay.
+  useEffect(() => {
+    void hotkeySave(combo.keys).catch(() => {});
+  }, [combo]);
 
   useEffect(() => {
-    if (held && level >= HEARD_LEVEL) setHeard(true);
-  }, [held, level]);
+    // The radial bars amplify tiny band values, so the UI can look "alive" while RMS
+    // stays under the old 0.08 gate. Count the loudest band, not a simultaneous hold.
+    const loudest = Math.max(peak, level, ...bands);
+    if (loudest >= HEARD_LEVEL) setHeard(true);
+  }, [peak, level, bands]);
 
   useEffect(() => {
     if (held) setVoiceState("recording");
@@ -68,18 +72,14 @@ export function WakeSpeak({
   }, [held, heard]);
 
   useEffect(() => {
-    void permissionsStatus().then((statuses) => {
-      const mic = statuses.find((entry) => entry.id === "microphone");
-      if (mic?.state !== "granted") void permissionsRequest("microphone");
-    });
+    void requestMicrophoneAccess();
   }, []);
 
   const finish = async () => {
     setBusy(true);
     setFinishError(null);
     try {
-      await settingsFinishOnboarding();
-      onFinish();
+      await onFinish();
     } catch {
       setFinishError("Couldn’t finish setup. Try again.");
       setBusy(false);
@@ -89,7 +89,7 @@ export function WakeSpeak({
   return (
     <Screen
       title="Wake Pointy and speak"
-      lede="Hold your hotkey and say something out loud. When the meter moves with your voice, Pointy can hear you."
+      lede="Hold your hotkey — the frosted overlay should appear. Speak, and when the meter moves, you’re ready."
     >
       <div className="flex flex-col gap-4">
         <Card className="p-5">
@@ -136,22 +136,12 @@ export function WakeSpeak({
                   : "Looking for your microphone…"}
             </Checkline>
             <Checkline done={heard}>
-              {heard ? "Pointy heard your voice" : "Hold your hotkey and speak to test it"}
+              {heard ? "Pointy heard your voice" : "Speak so the meter moves"}
+            </Checkline>
+            <Checkline done={held}>
+              {held ? "Hotkey is waking Pointy" : "Hold your hotkey to see the glass overlay"}
             </Checkline>
           </div>
-
-          {heard && !held && (
-            <div className="mt-4 flex justify-center">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground"
-                onClick={() => setHeard(false)}
-              >
-                Test again
-              </Button>
-            </div>
-          )}
         </Card>
 
         {finishError && (
@@ -164,13 +154,16 @@ export function WakeSpeak({
       <StepNav
         onBack={onBack}
         onNext={() => void finish()}
-        nextDisabled={!detected || busy}
-        nextLabel={busy ? "Finishing…" : heard ? "Start using Pointy" : "Skip voice test"}
+        nextDisabled={!heard || busy}
+        nextReady={heard && !busy}
+        nextLabel={busy ? "Finishing…" : "Start using Pointy"}
       />
       <p className="mx-auto mt-3 max-w-md text-center text-xs text-muted-foreground">
         {heard
-          ? "Your microphone is working — you’re ready to go."
-          : "Hold your hotkey and speak to check your microphone, or skip if you're sure it works."}
+          ? held
+            ? "Hotkey and microphone are working — you’re ready to go."
+            : "Microphone is working. Hold your hotkey to preview the glass overlay, or continue."
+          : "Speak so the meter moves. Continue unlocks when Pointy hears you."}
       </p>
     </Screen>
   );
