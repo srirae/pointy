@@ -10,12 +10,19 @@ import {
   onOverlayHidden,
   overlayHide,
   overlaySetHitRect,
+  guideStart,
+  guideStop,
+  guideRepeat,
+  onGuideStep,
   overlaySetPassthrough,
+  usageQuestion,
   wakeSetTranscript,
   windowsList,
+  speakText,
   type AppWindow,
+  type GuideStep,
 } from "@/lib/pointy";
-import { askAboutScreen, grabScreen, targetToScreen } from "@/lib/screen-ask";
+import { askAboutScreen, targetToScreen } from "@/lib/screen-ask";
 
 /**
  * The overlay session.
@@ -24,6 +31,10 @@ import { askAboutScreen, grabScreen, targetToScreen } from "@/lib/screen-ask";
  * The mic only ever opens while `listening` is true, which needs a deliberate
  * hotkey hold or mic tap — the webview is mounted for the whole process life, so
  * anything else would record the room in the background.
+ *
+ * When an answer says the task is multi-step, the guided walkthrough starts
+ * automatically: it watches the real accessibility tree for completion of each
+ * step and asks the model for the next one — no wake word needed in between.
  */
 export function Overlay() {
   const [open, setOpen] = useState(false);
@@ -44,11 +55,19 @@ export function Overlay() {
   const [pointedTurn, setPointedTurn] = useState<number | null>(null);
   const [copiedTurn, setCopiedTurn] = useState<number | null>(null);
   const [pos, setPos] = useState(() => defaultPos());
+  const [speak, setSpeak] = useState(true);
+  const [guide, setGuide] = useState<{ active: boolean; task: string; step: number }>({
+    active: false,
+    task: "",
+    step: 1,
+  });
+  const [guideStep, setGuideStep] = useState<GuideStep | null>(null);
 
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const turnSeq = useRef(0);
+  const spokenIds = useRef(new Set<number>());
   /** False once the user types, so speech stops overwriting their edits. */
   const dictating = useRef(false);
 
@@ -115,6 +134,63 @@ export function Overlay() {
     return () => window.clearTimeout(timer);
   }, [copiedTurn]);
 
+  // Warm the webview's voices early; on WebView2 they load asynchronously and
+  // an empty voice list would otherwise make the first answer go unspoken.
+  useEffect(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.getVoices();
+    }
+  }, []);
+
+  // Speak with the webview voice when it has any; otherwise fall back to the
+  // OS SAPI voice (Rust) so answers are always read aloud.
+  const speakAloud = useCallback((text: string) => {
+    if (typeof window === "undefined" || !text.trim()) return;
+    if ("speechSynthesis" in window && window.speechSynthesis.getVoices().length > 0) {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    } else {
+      void speakText(text);
+    }
+  }, []);
+
+  // Speak finished answers out loud. Newly-done turns only.
+  useEffect(() => {
+    if (!speak) return;
+    for (const turn of turns) {
+      if (turn.status !== "done" || !turn.answer || spokenIds.current.has(turn.id)) continue;
+      spokenIds.current.add(turn.id);
+      const text = turn.answer.replace(/[*_`#>\[\]()~]/g, "").trim();
+      if (!text) continue;
+      speakAloud(text);
+    }
+  }, [turns, speak, speakAloud]);
+
+  // Walkthrough events arrive from the backend; speak them as they land.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    onGuideStep((step) => {
+      if (cancelled) return;
+      setGuideStep(step);
+      if (step.kind === "done") setGuide((g) => ({ ...g, active: false }));
+    }).then((off) => {
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!guideStep || !speak) return;
+    const text = guideStep.say.replace(/[*_`#>\[\]()~]/g, "").trim();
+    if (!text) return;
+    speakAloud(text);
+  }, [guideStep, speak, speakAloud]);
+
   // ---------------------------------------------------------------- session
 
   const loadWindows = useCallback(() => {
@@ -131,6 +207,11 @@ export function Overlay() {
   const resetSession = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    window.speechSynthesis?.cancel();
+    spokenIds.current.clear();
+    void guideStop();
+    setGuide({ active: false, task: "", step: 1 });
+    setGuideStep(null);
     setOpen(false);
     setLeaving(false);
     setPicking(false);
@@ -190,27 +271,53 @@ export function Overlay() {
     void wakeSetTranscript(question);
 
     try {
-      const shot = await grabScreen(app?.id ?? null);
+      // Usage questions are answered locally — no screenshot, no API call.
+      const usage = await usageQuestion(question);
       if (ctrl.signal.aborted) return;
+      if (usage) {
+        settle({ status: "done", answer: usage, target: null, error: null });
+        return;
+      }
+
       const reply = await askAboutScreen(
         question,
-        shot.image || null,
+        app?.id ?? null,
         app?.app ?? null,
         ctrl.signal,
       );
       if (ctrl.signal.aborted) return;
+      const target = reply.target ? targetToScreen(reply.target, reply) : null;
       settle({
         status: "done",
         answer: visibleAnswer(reply.answer, reply.advice),
-        target: reply.target ? targetToScreen(reply.target, shot) : null,
+        target,
         error: null,
       });
+
+      // Multi-step task → start the guided walkthrough automatically. The first
+      // step is the answer we just got; the backend begins watching the
+      // accessibility tree for its completion.
+      if (reply.multi_step) {
+        spokenIds.current.add(turnId); // the walkthrough speaks step one once
+        setGuide({ active: true, task: question, step: 1 });
+        setGuideStep({
+          kind: "step",
+          step: 1,
+          say: reply.answer,
+          target: reply.target, // shot-relative; mapped by targetToScreen
+          x: reply.x,
+          y: reply.y,
+          w: reply.w,
+          h: reply.h,
+        });
+        void guideStart(question, app?.id ?? null, reply.target?.label ?? null);
+      }
     } catch (reason) {
       if (ctrl.signal.aborted) return;
       settle({
         status: "error",
         error:
-          reason instanceof Error ? reason.message : "Couldn’t reach NVIDIA NIM. Try again.",
+          reason instanceof Error ? reason.message : "Couldn’t reach OpenRouter. Try again.",
       });
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
@@ -282,6 +389,16 @@ export function Overlay() {
     setPointedTurn(null);
     loadWindows();
   }, [loadWindows, stopListening]);
+
+  const stopGuide = useCallback(() => {
+    void guideStop();
+    setGuide((g) => ({ ...g, active: false }));
+    setGuideStep(null);
+  }, []);
+
+  const repeatGuide = useCallback(() => {
+    void guideRepeat();
+  }, []);
 
   const copy = useCallback((turn: Turn) => {
     void navigator.clipboard?.writeText(turn.answer).catch(() => {});
@@ -380,6 +497,7 @@ export function Overlay() {
   };
 
   const pointed = turns.find((turn) => turn.id === pointedTurn) ?? null;
+  const guideTarget = guideStep?.target ? targetToScreen(guideStep.target, guideStep) : null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-transparent">
@@ -411,6 +529,20 @@ export function Overlay() {
             exit={{ opacity: 0 }}
           >
             <ClickHint target={pointed.target} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {!leaving && !pointed?.target && guideTarget && (
+          <motion.div
+            key="guide-hint"
+            className="absolute inset-0 z-[5]"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <ClickHint target={guideTarget} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -463,6 +595,12 @@ export function Overlay() {
                 }
                 copiedTurn={copiedTurn}
                 onCopy={copy}
+                speakEnabled={speak}
+                onToggleSpeak={() => setSpeak((s) => !s)}
+                guideActive={guide.active}
+                guideStep={guideStep}
+                onRepeatGuide={repeatGuide}
+                onStopGuide={stopGuide}
                 onClose={close}
                 headerProps={headerProps}
               />

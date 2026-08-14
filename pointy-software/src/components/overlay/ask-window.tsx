@@ -15,6 +15,8 @@ import {
   Pencil,
   RotateCcw,
   Square,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { motion } from "motion/react";
@@ -23,7 +25,7 @@ import { AnswerMarkdown } from "@/components/overlay/answer-markdown";
 import { AppPicker } from "@/components/overlay/app-picker";
 import { Thinking } from "@/components/overlay/thinking";
 import { PointyMark } from "@/components/pointy-mark";
-import type { AppWindow, ClickTarget } from "@/lib/pointy";
+import type { AppWindow, ClickTarget, GuideStep } from "@/lib/pointy";
 
 export type TurnStatus = "asking" | "done" | "stopped" | "error";
 
@@ -41,8 +43,9 @@ const SPRING = { type: "spring", stiffness: 380, damping: 32 } as const;
 /**
  * The glass panel: pick an app, then a running conversation about it.
  *
- * The draft question lives only in the composer. Sent questions move into the
- * history, so nothing is ever shown twice.
+ * When a question is multi-step, a large walkthrough banner takes over the
+ * space below the conversation: one instruction at a time, big and
+ * high-contrast, with "Repeat that", "I'm stuck" and "Stop" always visible.
  */
 export function AskWindow({
   picking,
@@ -70,6 +73,12 @@ export function AskWindow({
   onTogglePoint,
   copiedTurn,
   onCopy,
+  speakEnabled,
+  onToggleSpeak,
+  guideActive,
+  guideStep,
+  onRepeatGuide,
+  onStopGuide,
   onClose,
   headerProps,
 }: {
@@ -98,6 +107,12 @@ export function AskWindow({
   onTogglePoint: (turn: Turn) => void;
   copiedTurn: number | null;
   onCopy: (turn: Turn) => void;
+  speakEnabled: boolean;
+  onToggleSpeak: () => void;
+  guideActive: boolean;
+  guideStep: GuideStep | null;
+  onRepeatGuide: () => void;
+  onStopGuide: () => void;
   onClose: () => void;
   headerProps?: HTMLAttributes<HTMLDivElement>;
 }) {
@@ -141,7 +156,7 @@ export function AskWindow({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.98 }}
       transition={SPRING}
-      className="flex w-[min(23rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-[1.35rem]"
+      className="flex w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-[1.35rem]"
       style={{
         background: "rgba(236, 239, 242, 0.9)",
         boxShadow: [
@@ -197,6 +212,16 @@ export function AskWindow({
         />
         <button
           type="button"
+          onClick={onToggleSpeak}
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-label={speakEnabled ? "Mute voice" : "Unmute voice"}
+          title={speakEnabled ? "Mute voice" : "Unmute voice"}
+          className="flex size-5 shrink-0 items-center justify-center rounded-full text-[#6b7785] transition-colors hover:bg-[#2e3a47]/10 hover:text-[#2e3a47]"
+        >
+          {speakEnabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
+        </button>
+        <button
+          type="button"
           onClick={onClose}
           onPointerDown={(event) => event.stopPropagation()}
           aria-label="Close Pointy"
@@ -208,7 +233,7 @@ export function AskWindow({
 
       <div
         ref={scrollRef}
-        className="max-h-[19rem] overflow-y-auto overscroll-contain px-3.5 pb-2"
+        className="max-h-[16rem] overflow-y-auto overscroll-contain px-3.5 pb-2"
       >
         {picking ? (
           <AppPicker
@@ -245,6 +270,50 @@ export function AskWindow({
 
       {micError && !picking && (
         <p className="px-3.5 pb-1 text-[0.6875rem] leading-relaxed text-[#b42318]">{micError}</p>
+      )}
+
+      {/* Guided walkthrough: one big, calm instruction at a time. */}
+      {guideStep && (
+        <div
+          className="mx-3 mb-2 rounded-2xl px-4 py-3"
+          style={{
+            background: "rgba(255, 166, 31, 0.16)",
+            border: "1.5px solid rgba(138, 82, 0, 0.4)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[0.75rem] font-bold tracking-[0.08em] text-[#8a5200] uppercase">
+              Step {guideStep.step}
+            </span>
+            <span
+              className="rounded-full px-2 py-0.5 text-[0.6875rem] font-bold"
+              style={{ background: "rgba(13,74,71,0.12)", color: "#0d4a47" }}
+            >
+              {guideActive ? "Guiding you" : "Done"}
+            </span>
+          </div>
+          <p className="mt-1 text-[1.0625rem] font-semibold leading-snug text-[#2e3a47]">
+            {guideStep.kind === "confirmed" ? "✓ " : ""}
+            {guideStep.say}
+          </p>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onRepeatGuide}
+              className="rounded-full px-3.5 py-2 text-[0.9375rem] font-bold text-[#2e3a47] transition-transform hover:scale-[1.03]"
+              style={{ background: "rgba(255, 255, 255, 0.9)", boxShadow: "0 2px 8px -2px rgba(46,58,71,0.35)" }}
+            >
+              Repeat that
+            </button>
+            <button
+              type="button"
+              onClick={onStopGuide}
+              className="rounded-full px-3 py-2 text-[0.875rem] font-bold text-[#8a5200] transition-colors hover:bg-[#ffa61f]/20"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
       )}
 
       <form

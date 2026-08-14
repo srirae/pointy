@@ -28,6 +28,8 @@ cpal = "0.18.1"
 rustfft = "6.4.1"
 tauri-plugin-store = "2"
 xcap = "0.9.8"
+# downscale + JPEG-encode screenshots in Rust (already pulled in by xcap)
+image = "0.25"
 base64 = "0.23.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "blocking", "native-tls"] }
 

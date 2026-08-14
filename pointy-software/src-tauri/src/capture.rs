@@ -13,6 +13,7 @@ use std::io::Cursor;
 use std::sync::Mutex;
 
 use base64::Engine;
+use image::imageops::FilterType;
 use serde::{Deserialize, Serialize};
 use xcap::image::RgbaImage;
 use xcap::{Monitor, Window};
@@ -21,6 +22,19 @@ use xcap::{Monitor, Window};
 #[derive(Debug, Clone, Serialize)]
 pub struct Shot {
     pub image: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// A capture already sized for the vision model: a downscaled JPEG plus the
+/// fraction of the monitor it covers (so the model's box maps back to screen).
+#[derive(Debug, Clone, Serialize)]
+pub struct AskCapture {
+    pub image: String,
+    pub width: u32,
+    pub height: u32,
     pub x: f64,
     pub y: f64,
     pub w: f64,
@@ -57,6 +71,10 @@ impl WakeStore {
     pub fn remember(&self, shot: &Shot) {
         let mut session = self.inner.lock().unwrap();
         session.screenshot = Some(shot.image.clone());
+    }
+
+    pub fn remember_image(&self, image: &str) {
+        self.inner.lock().unwrap().screenshot = Some(image.to_string());
     }
 
     pub fn set_transcript(&self, transcript: String) {
@@ -132,8 +150,36 @@ pub fn list_windows() -> Result<Vec<AppWindow>, String> {
     Ok(out)
 }
 
-/// Capture the primary monitor, cropped to `window` when one is given.
+/// Capture the primary monitor, cropped to `window` when one is given (full PNG).
 pub fn capture(window_id: Option<u32>) -> Result<Shot, String> {
+    let (image, x, y, w, h) = capture_region(window_id)?;
+    Ok(Shot {
+        image: encode_png(&image)?,
+        x,
+        y,
+        w,
+        h,
+    })
+}
+
+/// Capture for the vision model: cropped, downscaled and JPEG-encoded in memory.
+/// The full-res PNG never exists, so nothing heavy crosses the IPC boundary.
+pub fn capture_ask(window_id: Option<u32>, max_edge: u32) -> Result<AskCapture, String> {
+    let (image, x, y, w, h) = capture_region(window_id)?;
+    let scaled = downscale(&image, max_edge);
+    let (width, height) = scaled.dimensions();
+    Ok(AskCapture {
+        image: encode_jpeg(&scaled, 85)?,
+        width,
+        height,
+        x,
+        y,
+        w,
+        h,
+    })
+}
+
+fn capture_region(window_id: Option<u32>) -> Result<(RgbaImage, f64, f64, f64, f64), String> {
     let monitor = primary_monitor()?;
     let full = monitor
         .capture_image()
@@ -141,13 +187,7 @@ pub fn capture(window_id: Option<u32>) -> Result<Shot, String> {
 
     let region = window_id.and_then(|id| monitor_fraction_of_window(&monitor, id));
     let Some((fx, fy, fw, fh)) = region else {
-        return Ok(Shot {
-            image: encode_png(&full)?,
-            x: 0.0,
-            y: 0.0,
-            w: 1.0,
-            h: 1.0,
-        });
+        return Ok((full, 0.0, 0.0, 1.0, 1.0));
     };
 
     // Fractions -> pixels of *this* capture, so DPI scaling cannot skew the crop.
@@ -159,13 +199,13 @@ pub fn capture(window_id: Option<u32>) -> Result<Shot, String> {
     let ch = ((fh * ih as f64).round() as u32).clamp(1, ih - cy);
 
     let cropped = RgbaImage::from_fn(cw, ch, |x, y| *full.get_pixel(cx + x, cy + y));
-    Ok(Shot {
-        image: encode_png(&cropped)?,
-        x: cx as f64 / iw as f64,
-        y: cy as f64 / ih as f64,
-        w: cw as f64 / iw as f64,
-        h: ch as f64 / ih as f64,
-    })
+    Ok((
+        cropped,
+        cx as f64 / iw as f64,
+        cy as f64 / ih as f64,
+        cw as f64 / iw as f64,
+        ch as f64 / ih as f64,
+    ))
 }
 
 /// Where a window sits on the monitor, as 0..1 fractions clipped to the screen.
@@ -215,6 +255,30 @@ fn encode_png(image: &RgbaImage) -> Result<String, String> {
         .map_err(|e| format!("Could not encode the screenshot: {e}"))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
     Ok(format!("data:image/png;base64,{encoded}"))
+}
+
+/// Shrink the long edge to `max_edge`, keeping the aspect ratio.
+fn downscale(image: &RgbaImage, max_edge: u32) -> RgbaImage {
+    let (w, h) = image.dimensions();
+    let long = w.max(h);
+    if long <= max_edge {
+        return image.clone();
+    }
+    let scale = max_edge as f32 / long as f32;
+    let nw = ((w as f32 * scale).round() as u32).max(1);
+    let nh = ((h as f32 * scale).round() as u32).max(1);
+    image::imageops::resize(image, nw, nh, FilterType::Triangle)
+}
+
+fn encode_jpeg(image: &RgbaImage, quality: u8) -> Result<String, String> {
+    let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+    let mut buffer = Cursor::new(Vec::new());
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
+    encoder
+        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("Could not encode the screenshot: {e}"))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(buffer.into_inner());
+    Ok(format!("data:image/jpeg;base64,{encoded}"))
 }
 
 fn is_own_window(app: &str) -> bool {

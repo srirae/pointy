@@ -115,6 +115,30 @@ pub fn snapshot_desktop(app: &AppHandle, window_id: Option<u32>) -> Result<Shot,
     Ok(shot)
 }
 
+/// Hide Pointy, photograph the desktop already sized for the model (JPEG ≤1280),
+/// then put the glass back. Same timing as `snapshot_desktop`, but the full-res
+/// PNG is never produced or shipped to the webview.
+pub fn snapshot_for_ask(
+    app: &AppHandle,
+    window_id: Option<u32>,
+) -> Result<crate::capture::AskCapture, String> {
+    conceal_for_capture(app);
+    if let Some(id) = window_id {
+        focus_hwnd(id);
+    }
+    std::thread::sleep(Duration::from_millis(110));
+
+    let shot = crate::capture::capture_ask(window_id, 1280);
+
+    show_fullscreen(app);
+
+    let shot = shot?;
+    if let Some(state) = app.try_state::<Pointy>() {
+        state.wake.remember_image(&shot.image);
+    }
+    Ok(shot)
+}
+
 /// Bring the window the user picked to the front so it is what gets captured.
 pub fn focus_app_window(id: u32) {
     focus_hwnd(id);

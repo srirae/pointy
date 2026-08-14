@@ -19,7 +19,8 @@ function recognitionCtor(): SpeechCtor | null {
 
 /**
  * Overlay-owned microphone: live levels, live speech-to-text, and a WAV of the hold
- * sent through NVIDIA Whisper when the browser recognizer is silent (WebView2).
+ * sent through cloud Whisper (Groq first, NVIDIA fallback) when the browser
+ * recognizer is silent (WebView2).
  *
  * The overlay webview stays mounted for the process lifetime. `active` must be false
  * until the hotkey goes down, or this hook records the room in the background.

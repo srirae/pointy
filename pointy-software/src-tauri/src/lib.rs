@@ -13,6 +13,7 @@
 
 mod audio;
 mod capture;
+mod guide;
 mod hotkey;
 mod keyboard;
 mod keys;
@@ -20,13 +21,18 @@ mod nim;
 mod overlay;
 mod permissions;
 mod settings;
+mod tts;
+mod uia;
+mod usage;
 
 use audio::{AudioDevice, AudioManager};
 use capture::WakeStore;
+use guide::GuideManager;
 use hotkey::{Combo, HotkeyManager, Validation};
 use permissions::{Capability, PermissionStatus};
 use settings::Settings;
 use tauri::{AppHandle, Emitter, Manager, State};
+use usage::UsageTracker;
 use tauri_plugin_global_shortcut::{ShortcutState, Builder as ShortcutBuilder};
 use base64::Engine;
 
@@ -34,6 +40,8 @@ pub(crate) struct Pointy {
     pub(crate) hotkey: HotkeyManager,
     pub(crate) audio: AudioManager,
     pub(crate) wake: WakeStore,
+    pub(crate) usage: UsageTracker,
+    pub(crate) guide: GuideManager,
 }
 
 // ---------------------------------------------------------------- permissions
@@ -199,17 +207,73 @@ fn overlay_set_hit_rect(rect: overlay::HitRectDto) {
     overlay::set_hit_rect(rect);
 }
 
+/// The model's reply plus where the capture sat on the monitor, so the frontend
+/// can map the target box back onto the full screen.
+#[derive(serde::Serialize)]
+struct AskReply {
+    answer: String,
+    advice: String,
+    multi_step: bool,
+    target: Option<nim::ClickTarget>,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
 #[tauri::command]
 async fn ask_screen(
+    app: AppHandle,
     question: String,
-    screenshot: Option<String>,
-    app: Option<String>,
-) -> Result<nim::NimReply, String> {
+    window_id: Option<u32>,
+    app_name: Option<String>,
+) -> Result<AskReply, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        nim::ask_screen(&question, screenshot.as_deref(), app.as_deref())
+        let shot = overlay::snapshot_for_ask(&app, window_id)?;
+        let reply = nim::ask_screen(
+            &question,
+            Some(&shot.image),
+            app_name.as_deref(),
+            Some((shot.width, shot.height)),
+        )?;
+        let target = refine_target(window_id, &shot, reply.target);
+        Ok(AskReply {
+            answer: reply.answer,
+            advice: reply.advice,
+            multi_step: reply.multi_step,
+            target,
+            x: shot.x,
+            y: shot.y,
+            w: shot.w,
+            h: shot.h,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Replace the model's guessed box with the real UI Automation rectangle when
+/// the element can be found; otherwise keep the model's coordinates.
+#[cfg(windows)]
+fn refine_target(
+    window_id: Option<u32>,
+    shot: &capture::AskCapture,
+    target: Option<nim::ClickTarget>,
+) -> Option<nim::ClickTarget> {
+    // UIA refinement needs a concrete window; without one keep the model's box.
+    match (target, window_id) {
+        (Some(target), Some(id)) => uia::refine(id, shot, &target).or(Some(target)),
+        (target, _) => target,
+    }
+}
+
+#[cfg(not(windows))]
+fn refine_target(
+    _window_id: Option<u32>,
+    _shot: &capture::AskCapture,
+    target: Option<nim::ClickTarget>,
+) -> Option<nim::ClickTarget> {
+    target
 }
 
 #[tauri::command]
@@ -263,6 +327,61 @@ fn wake_set_transcript(state: State<'_, Pointy>, transcript: String) {
     state.wake.set_transcript(transcript);
 }
 
+// --------------------------------------------------------------------- usage
+
+#[tauri::command]
+fn usage_stats(state: State<'_, Pointy>) -> usage::UsageData {
+    state.usage.snapshot()
+}
+
+/// Answer "how long did I spend on X?" from local data, or None when the
+/// question is not a usage question or nothing matches.
+#[tauri::command]
+fn usage_question(question: String, state: State<'_, Pointy>) -> Option<String> {
+    usage::answer_usage(&question, &state.usage.snapshot())
+}
+
+// --------------------------------------------------------------------- guide
+
+#[tauri::command]
+fn guide_start(
+    app: AppHandle,
+    state: State<'_, Pointy>,
+    task: String,
+    window_id: Option<u32>,
+    first_label: Option<String>,
+) -> Result<(), String> {
+    let task = task.trim().to_string();
+    if task.is_empty() {
+        return Err("Tell me what you need help with.".into());
+    }
+    state.guide.start(app, task, window_id, first_label);
+    Ok(())
+}
+
+#[tauri::command]
+fn guide_stop(state: State<'_, Pointy>) {
+    state.guide.stop();
+}
+
+#[tauri::command]
+fn guide_active(state: State<'_, Pointy>) -> bool {
+    state.guide.active()
+}
+
+#[tauri::command]
+fn guide_repeat(app: AppHandle, state: State<'_, Pointy>) {
+    state.guide.repeat(&app);
+}
+
+/// Speak text through the OS voice (fallback when the webview has no voices).
+#[tauri::command]
+async fn speak(text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || tts::speak(&text))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -288,10 +407,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
+            let usage_path = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join("usage.json");
             let state = Pointy {
                 hotkey: HotkeyManager::start(handle.clone()),
                 audio: AudioManager::new(),
                 wake: WakeStore::new(),
+                usage: UsageTracker::new(usage_path),
+                guide: GuideManager::new(),
             };
 
             let stored = settings::load(&handle);
@@ -340,6 +466,13 @@ pub fn run() {
             capture_scope,
             wake_session,
             wake_set_transcript,
+            usage_stats,
+            usage_question,
+            guide_start,
+            guide_stop,
+            guide_active,
+            guide_repeat,
+            speak,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

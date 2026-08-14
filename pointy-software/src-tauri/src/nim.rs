@@ -1,35 +1,202 @@
-//! NVIDIA NIM from Rust — reads `.env` off disk and calls the API without CORS.
+//! AI calls from Rust — reads `.env` off disk and calls the API without CORS.
 //!
-//! The key must never reach the webview: Vite inlines `VITE_*` vars into the bundle
-//! at build time, so a browser-side key would ship inside the installer. Only
-//! unprefixed names are accepted here, and this module is the single source of truth.
+//! Chat, vision and speech-to-text run through a cascade of free-tier providers
+//! (Groq, Gemini, OpenRouter); whichever free keys are present are used, fastest
+//! first. The keys must never reach the
+//! webview: Vite inlines `VITE_*` vars into the bundle at build time, so a
+//! browser-side key would ship inside the installer. Only unprefixed names are
+//! accepted here, and this module is the single source of truth.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-const NIM_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
-const TRANSCRIBE_URL: &str = "https://integrate.api.nvidia.com/v1/audio/transcriptions";
+/// One free-tier provider. Providers are tried in order and skipped when their
+/// key is absent, so Pointy works with whichever free keys the user has added.
+struct Provider {
+    name: &'static str,
+    url: &'static str,
+    keys: &'static [&'static str],
+    vision: &'static [&'static str],
+    text: &'static [&'static str],
+    /// Some providers reject `response_format: json_object`; omit it for them.
+    json_mode: bool,
+    /// Disable the model's internal reasoning so the answer is fast, clean and
+    /// never leaks a `<think>` chain into the chat or the spoken reply.
+    no_think: bool,
+}
 
-const VISION_MODELS: &[&str] = &[
-    "meta/llama-3.2-90b-vision-instruct",
-    "meta/llama-3.2-11b-vision-instruct",
+const PROVIDERS: &[Provider] = &[
+    Provider {
+        name: "groq",
+        url: "https://api.groq.com/openai/v1/chat/completions",
+        keys: &["GROQ_API_KEY"],
+        vision: &["qwen/qwen3.6-27b"],
+        text: &["llama-3.3-70b-versatile"],
+        // qwen3.6's thinking mode makes Groq's json_object validation fail with
+        // a 400; the parser handles plain JSON text anyway, so don't force it.
+        json_mode: false,
+        no_think: true,
+    },
+    Provider {
+        name: "gemini",
+        url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        keys: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        vision: &["gemini-3.6-flash"],
+        text: &["gemini-3.6-flash", "gemini-3.5-flash-lite"],
+        json_mode: false,
+        no_think: false,
+    },
+    Provider {
+        name: "openrouter",
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        keys: &["OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"],
+        vision: &[
+            "google/gemma-4-26b-a4b-it:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-nano-12b-v2-vl:free",
+        ],
+        text: &["google/gemma-4-26b-a4b-it:free"],
+        json_mode: true,
+        no_think: false,
+    },
 ];
-const TEXT_MODELS: &[&str] = &[
-    "meta/llama-3.3-70b-instruct",
-    "nvidia/llama-3.1-nemotron-70b-instruct",
+
+/// Providers whose last call hit a rate limit or a dead connection are skipped
+/// for a few seconds so the cascade does not re-hammer a hot free pool on every
+/// click and heartbeat. Cleared lazily as the cooldown expires.
+static COOLDOWNS: Mutex<Option<HashMap<&'static str, Instant>>> = Mutex::new(None);
+
+fn in_cooldown(name: &'static str) -> bool {
+    let mut guard = COOLDOWNS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    match map.get(name) {
+        Some(until) if *until > Instant::now() => true,
+        Some(_) => {
+            map.remove(name);
+            false
+        }
+        None => false,
+    }
+}
+
+fn mark_cooldown(name: &'static str) {
+    COOLDOWNS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(name, Instant::now() + Duration::from_secs(8));
+}
+
+/// Free-tier speech-to-text providers, tried fastest-first. Groq's Whisper is
+/// free and fast; NVIDIA remains a fallback for users who already have that key.
+struct SttProvider {
+    name: &'static str,
+    url: &'static str,
+    keys: &'static [&'static str],
+    models: &'static [&'static str],
+}
+
+const STT_PROVIDERS: &[SttProvider] = &[
+    SttProvider {
+        name: "groq",
+        url: "https://api.groq.com/openai/v1/audio/transcriptions",
+        keys: &["GROQ_API_KEY"],
+        models: &["whisper-large-v3-turbo", "whisper-large-v3"],
+    },
+    SttProvider {
+        name: "nvidia",
+        url: "https://integrate.api.nvidia.com/v1/audio/transcriptions",
+        keys: &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
+        models: &[
+            "openai/whisper-large-v3",
+            "nvidia/whisper-large-v3",
+            "nvidia/parakeet-tdt-0.6b-v2",
+        ],
+    },
 ];
-const TRANSCRIBE_MODELS: &[&str] = &[
-    "openai/whisper-large-v3",
-    "nvidia/whisper-large-v3",
-    "nvidia/parakeet-tdt-0.6b-v2",
-];
+
+/// One shared client so each question reuses the TLS connection instead of
+/// paying a fresh handshake per request.
+fn client() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(120))
+            .build()
+            .expect("build the HTTP client")
+    })
+}
+
+/// Flatten the full error chain so a bare "error sending request" log also
+/// shows *why* (DNS, timeout, connection reset, TLS …).
+fn describe_error(err: &reqwest::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = std::error::Error::source(err);
+    while let Some(next) = source {
+        parts.push(next.to_string());
+        source = std::error::Error::source(next);
+    }
+    parts.join(": ")
+}
+
+/// POST to a provider with one bounded retry. Retries transport errors and
+/// 429/5xx — the free tier rate-limits often — then parks the provider in a
+/// short cooldown instead of hammering it.
+fn post_json(
+    url: &str,
+    payload: &serde_json::Value,
+    key: &str,
+    provider: &'static str,
+) -> Result<String, String> {
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(250));
+            eprintln!("[nim] retry {attempt} after: {last_err}");
+        }
+        let response = match client()
+            .post(url)
+            .bearer_auth(key)
+            .header("Accept", "application/json")
+            .header("X-Title", "Pointy")
+            .json(payload)
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => {
+                last_err = describe_error(&err);
+                mark_cooldown(provider);
+                continue;
+            }
+        };
+        let status = response.status();
+        let body = response.text().map_err(|e| e.to_string())?;
+        if status.is_success() {
+            return Ok(body);
+        }
+        last_err = format!("{status}: {}", body.chars().take(180).collect::<String>());
+        let retryable =
+            status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+        if !retryable {
+            mark_cooldown(provider);
+            return Err(last_err);
+        }
+    }
+    mark_cooldown(provider);
+    Err(last_err)
+}
 
 const SYSTEM: &str = r#"You are Pointy, a screen guide. You receive a screenshot taken at the moment the user sent their question, cropped to the app they chose to work on. Pointy's own glass was hidden for that shot.
 
 Respond with ONLY valid JSON (no markdown fences, no extra text):
-{"answer":"2-5 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","target":{"label":"Editor","x":0.22,"y":0.12,"w":0.55,"h":0.70}}
+{"answer":"1-2 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","multi_step":false,"target":{"label":"Send","x":0.22,"y":0.12,"w":0.08,"h":0.04}}
 
 Rules:
 - Answer for the app in the image (Cursor, VS Code, Chrome, Word, Explorer, …). Describe only controls you can actually see.
@@ -38,10 +205,28 @@ Rules:
 - "Cursor" means the Cursor code editor (like VS Code). Where to type code is the large editor pane in the center — not a mouse pointer, not Pointy, not the window title.
 - Cursor's chat/composer is usually a right-hand sidebar or a bar at the bottom. The file editor is the big center text area. Use the screenshot to choose the one they asked about.
 - Do not invent buttons or menus that are not visible.
+- Be kind and plain-spoken: short sentences, no jargon. Assume the reader may not know technical terms.
 - answer and advice are plain sentences only. Never put JSON, coordinates, or the word Target in them.
+- label is the control's short, exact name as the app calls it (e.g. "Send", "New chat", "Run", "Close"), so Pointy can match it against the real UI.
 - target is the EXACT bounding box of the UI element they asked about, as fractions 0-1 of the image: x,y = top-left, w,h = width and height. A glowing border is drawn on those edges, so the box must hug the control — not a tiny marker, not a random corner, not the whole image.
 - Never set target to Pointy or this assistant's panel.
-- If you cannot see a clickable control, set "target": null and still answer from what you can see."#;
+- If you cannot see a clickable control, set "target": null and still answer from what you can see.
+- Set "multi_step": true only when finishing the task needs more than one action (filling out a form, signing up, joining a call). For a single click or a simple question, set false. When true, the answer should state only the first step, in one short plain sentence."#;
+
+const WALKTHROUGH_SYSTEM: &str = r#"You are Pointy, a patient guide helping someone finish a task one step at a time. The user may be older or less comfortable with computers. Be warm and plain-spoken — short words, no jargon.
+
+Respond with ONLY valid JSON (no markdown fences, no extra text):
+{"status":"next","say":"one short plain sentence telling the single next action","target":{"label":"Continue","x":0.1,"y":0.2,"w":0.08,"h":0.04}}
+When the task is already finished, respond:
+{"status":"done","say":"one warm short sentence saying it is finished","target":null}
+
+Rules:
+- One action at a time. Never list more than one step.
+- say is one short sentence, at most ~15 words, meant to be spoken aloud.
+- target is the EXACT bounding box of the element to act on next, as 0-1 fractions of the image. null when there is nothing to click.
+- label is the element's short, exact name as the app calls it.
+- Never mention Pointy. Never tell the user to click Pointy.
+- If the task is already finished in this screenshot, return status "done"."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClickTarget {
@@ -56,6 +241,14 @@ pub struct ClickTarget {
 pub struct NimReply {
     pub answer: String,
     pub advice: String,
+    pub multi_step: bool,
+    pub target: Option<ClickTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuideReply {
+    pub status: String,
+    pub say: String,
     pub target: Option<ClickTarget>,
 }
 
@@ -63,64 +256,74 @@ pub fn ask_screen(
     question: &str,
     screenshot: Option<&str>,
     app: Option<&str>,
+    image_dims: Option<(u32, u32)>,
 ) -> Result<NimReply, String> {
-    let key = load_key()?;
     let trimmed = question.trim();
     if trimmed.is_empty() {
         return Ok(NimReply {
             answer: "Say or type what you want to do on this screen.".into(),
             advice: "Hold your hotkey and speak, or type your question.".into(),
+            multi_step: false,
             target: None,
         });
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .build()
-        .map_err(|e| format!("Could not reach NVIDIA: {e}"))?;
-
     let subject = app.map(str::trim).filter(|s| !s.is_empty());
+    let image = screenshot.filter(|s| s.starts_with("data:image"));
 
-    if let Some(image) = screenshot.filter(|s| s.starts_with("data:image")) {
-        for model in VISION_MODELS {
-            match complete(&client, &key, model, trimmed, Some(image), subject) {
+    let mut last = "No free model answered.".to_string();
+    for provider in PROVIDERS {
+        if in_cooldown(provider.name) {
+            continue;
+        }
+        let key = match load_key(provider.keys, provider.name) {
+            Ok(key) => key,
+            Err(_) => continue,
+        };
+        let models: &[&str] = if image.is_some() { provider.vision } else { provider.text };
+        for model in models {
+            match complete(
+                provider.url,
+                provider.json_mode,
+                &key,
+                model,
+                trimmed,
+                image,
+                subject,
+                image_dims,
+                provider.name,
+                provider.no_think,
+            ) {
                 Ok(reply) => return Ok(reply),
-                Err(err) => eprintln!("[nim] vision {model}: {err}"),
+                Err(err) => {
+                    eprintln!("[nim] {} {model}: {err}", provider.name);
+                    last = err;
+                }
             }
         }
     }
-
-    let mut last = "No text model answered.".to_string();
-    for model in TEXT_MODELS {
-        match complete(&client, &key, model, trimmed, None, subject) {
-            Ok(reply) => return Ok(reply),
-            Err(err) => {
-                eprintln!("[nim] text {model}: {err}");
-                last = err;
-            }
-        }
-    }
-    Err(format!("NVIDIA NIM did not return an answer. {last}"))
+    Err(format!("No free model answered. {last}"))
 }
 
 pub fn transcribe_wav(wav: &[u8]) -> Result<String, String> {
     if wav.len() < 64 {
         return Err("Nothing to transcribe.".into());
     }
-    let key = load_key()?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .build()
-        .map_err(|e| format!("Could not reach NVIDIA: {e}"))?;
 
     let mut last = "No speech model answered.".to_string();
-    for model in TRANSCRIBE_MODELS {
-        match transcribe_once(&client, &key, model, wav) {
-            Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_string()),
-            Ok(_) => last = format!("{model} returned empty text."),
-            Err(err) => {
-                eprintln!("[nim] stt {model}: {err}");
-                last = err;
+    for provider in STT_PROVIDERS {
+        let key = match load_key(provider.keys, provider.name) {
+            Ok(key) => key,
+            Err(_) => continue,
+        };
+        for model in provider.models {
+            match transcribe_once(client(), provider.url, &key, model, wav) {
+                Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_string()),
+                Ok(_) => last = format!("{model} returned empty text."),
+                Err(err) => {
+                    eprintln!("[nim] stt {} {model}: {err}", provider.name);
+                    last = err;
+                }
             }
         }
     }
@@ -129,6 +332,7 @@ pub fn transcribe_wav(wav: &[u8]) -> Result<String, String> {
 
 fn transcribe_once(
     client: &reqwest::blocking::Client,
+    url: &str,
     key: &str,
     model: &str,
     wav: &[u8],
@@ -143,7 +347,7 @@ fn transcribe_once(
         .part("file", part);
 
     let response = client
-        .post(TRANSCRIBE_URL)
+        .post(url)
         .bearer_auth(key)
         .multipart(form)
         .send()
@@ -165,12 +369,16 @@ fn transcribe_once(
 }
 
 fn complete(
-    client: &reqwest::blocking::Client,
+    url: &str,
+    json_mode: bool,
     key: &str,
     model: &str,
     question: &str,
     image: Option<&str>,
     app: Option<&str>,
+    dims: Option<(u32, u32)>,
+    provider: &'static str,
+    no_think: bool,
 ) -> Result<NimReply, String> {
     let subject = match app {
         Some(name) => format!("The user is working in {name}. "),
@@ -188,7 +396,9 @@ fn complete(
         serde_json::Value::String(prompt)
     };
 
-    let payload = serde_json::json!({
+    // 512 leaves room for a thinking model's internal reasoning without
+    // truncating the JSON answer.
+    let mut payload = serde_json::json!({
         "model": model,
         "messages": [
             { "role": "system", "content": SYSTEM },
@@ -196,36 +406,167 @@ fn complete(
         ],
         "temperature": 0.2,
         "top_p": 0.7,
-        "max_tokens": 700,
+        "max_tokens": 512,
         "stream": false
     });
-
-    let response = client
-        .post(NIM_URL)
-        .bearer_auth(key)
-        .header("Accept", "application/json")
-        .json(&payload)
-        .send()
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    let status = response.status();
-    let body = response.text().map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(format!("{status}: {}", body.chars().take(180).collect::<String>()));
+    if json_mode {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    if no_think {
+        payload["reasoning_effort"] = serde_json::json!("none");
     }
 
+    let body = post_json(url, &payload, key, provider)?;
+
     let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("Bad NIM JSON: {e}"))?;
-    let content = parsed["choices"][0]["message"]["content"]
+        serde_json::from_str(&body).map_err(|e| format!("Bad provider JSON: {e}"))?;
+    let raw = parsed["choices"][0]["message"]["content"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "NIM returned an empty answer.".to_string())?;
+        .ok_or_else(|| "The model returned an empty answer.".to_string())?;
+    let content = strip_think(raw);
 
-    Ok(parse_reply(content))
+    Ok(parse_reply(&content, dims))
 }
 
-fn parse_reply(raw: &str) -> NimReply {
+fn complete_guide(
+    url: &str,
+    json_mode: bool,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    image: Option<&str>,
+    dims: Option<(u32, u32)>,
+    provider: &'static str,
+    no_think: bool,
+    system: &str,
+) -> Result<GuideReply, String> {
+    let user = if let Some(image_url) = image {
+        serde_json::json!([
+            { "type": "image_url", "image_url": { "url": image_url } },
+            { "type": "text", "text": prompt }
+        ])
+    } else {
+        serde_json::Value::String(prompt.to_string())
+    };
+
+    let mut payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0.2,
+        "top_p": 0.7,
+        "max_tokens": 384,
+        "stream": false
+    });
+    if json_mode {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    if no_think {
+        payload["reasoning_effort"] = serde_json::json!("none");
+    }
+
+    let body = post_json(url, &payload, key, provider)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Bad provider JSON: {e}"))?;
+    let raw = parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "The model returned an empty answer.".to_string())?;
+    let content = strip_think(raw);
+
+    Ok(parse_guide(&content, dims))
+}
+
+/// Produce the next single step of a guided task from the current screenshot.
+pub fn next_step(
+    task: &str,
+    screenshot: &str,
+    step_number: u32,
+    image_dims: Option<(u32, u32)>,
+) -> Result<GuideReply, String> {
+    let image = screenshot.starts_with("data:image").then_some(screenshot);
+    let prompt = format!(
+        "Task: {task}\nThe user just finished the previous step. This is step {step_number}. This screenshot is the current state. Reply JSON only with the single next action, or \"done\" if the task is finished."
+    );
+
+    let mut last = "No free model answered.".to_string();
+    for provider in PROVIDERS {
+        if in_cooldown(provider.name) {
+            continue;
+        }
+        let key = match load_key(provider.keys, provider.name) {
+            Ok(key) => key,
+            Err(_) => continue,
+        };
+        for model in provider.vision {
+            match complete_guide(
+                provider.url,
+                provider.json_mode,
+                &key,
+                model,
+                &prompt,
+                image,
+                image_dims,
+                provider.name,
+                provider.no_think,
+                WALKTHROUGH_SYSTEM,
+            ) {
+                Ok(reply) => return Ok(reply),
+                Err(err) => {
+                    eprintln!("[nim] next {} {model}: {err}", provider.name);
+                    last = err;
+                }
+            }
+        }
+    }
+    Err(format!("No free model answered. {last}"))
+}
+
+fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
+    let cleaned = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```markdown")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    if let Some(json) = extract_json(cleaned) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) {
+            let status = value
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("correct")
+                .to_lowercase();
+            let say = value
+                .get("say")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if !say.is_empty() {
+                return GuideReply {
+                    status,
+                    say,
+                    target: parse_target(value.get("target"), dims),
+                };
+            }
+        }
+    }
+
+    GuideReply {
+        status: "correct".to_string(),
+        say: scrub_visible(cleaned),
+        target: None,
+    }
+}
+
+fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
     let cleaned = raw
         .trim()
         .trim_start_matches("```json")
@@ -256,7 +597,11 @@ fn parse_reply(raw: &str) -> NimReply {
                     } else {
                         advice
                     },
-                    target: parse_target(value.get("target")),
+                    multi_step: value
+                        .get("multi_step")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    target: parse_target(value.get("target"), dims),
                 };
             }
         }
@@ -267,12 +612,14 @@ fn parse_reply(raw: &str) -> NimReply {
         return NimReply {
             answer: "I can see the screen, but I could not read a clear answer. Ask again in a few words.".into(),
             advice: String::new(),
+            multi_step: false,
             target: None,
         };
     }
     NimReply {
         answer: visible,
         advice: String::new(),
+        multi_step: false,
         target: None,
     }
 }
@@ -286,15 +633,19 @@ fn extract_json(raw: &str) -> Option<String> {
     Some(raw[start..=end].to_string())
 }
 
-fn parse_target(value: Option<&serde_json::Value>) -> Option<ClickTarget> {
+fn parse_target(
+    value: Option<&serde_json::Value>,
+    dims: Option<(u32, u32)>,
+) -> Option<ClickTarget> {
     let value = value?;
     if value.is_null() {
         return None;
     }
-    let x = norm(value.get("x")?.as_f64()?);
-    let y = norm(value.get("y")?.as_f64()?);
-    let mut w = norm(value.get("w").and_then(|v| v.as_f64()).unwrap_or(0.04));
-    let mut h = norm(value.get("h").and_then(|v| v.as_f64()).unwrap_or(0.05));
+    let (dw, dh) = dims.unwrap_or((1280, 1280));
+    let x = norm(value.get("x")?.as_f64()?, dw as f64);
+    let y = norm(value.get("y")?.as_f64()?, dh as f64);
+    let mut w = norm(value.get("w").and_then(|v| v.as_f64()).unwrap_or(0.04), dw as f64);
+    let mut h = norm(value.get("h").and_then(|v| v.as_f64()).unwrap_or(0.05), dh as f64);
     if w < 0.012 {
         w = 0.04;
     }
@@ -315,6 +666,45 @@ fn parse_target(value: Option<&serde_json::Value>) -> Option<ClickTarget> {
         return None;
     }
     Some(ClickTarget { label, x, y, w, h })
+}
+
+/// Remove `<think>...</think>` reasoning blocks that a model may have leaked
+/// into the visible content (Qwen/Gemma thinking modes do this). Case-insensitive,
+/// and an unclosed `<think>` swallows the rest so nothing raw reaches the glass
+/// or the spoken reply.
+fn strip_think(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &lower[i..];
+        if let Some(tail) = rest.strip_prefix("<think") {
+            depth += 1;
+            i += "<think".len();
+            // Skip the rest of the opening tag if there is one.
+            if let Some(gt) = tail.find('>') {
+                i += gt + 1;
+            }
+            continue;
+        }
+        if let Some(tail) = rest.strip_prefix("</think") {
+            if depth > 0 {
+                depth -= 1;
+            }
+            i += "</think".len();
+            if let Some(gt) = tail.find('>') {
+                i += gt + 1;
+            }
+            continue;
+        }
+        if depth == 0 {
+            out.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+    out.trim().to_string()
 }
 
 /// Drop leaked JSON / "Target:" dumps so the glass never shows model plumbing.
@@ -358,19 +748,20 @@ fn is_cta_advice(text: &str) -> bool {
         || lower.contains("target:")
 }
 
-/// Models sometimes return percents (0-100) or pixels. Fold everything onto 0..1.
-fn norm(value: f64) -> f64 {
-    if value > 1.5 && value <= 100.0 {
+/// Models sometimes return percents (0-100) or pixels. Fold everything onto 0..1,
+/// using the real dimensions of the image we sent rather than a hardcoded width.
+fn norm(value: f64, denom: f64) -> f64 {
+    if value > 100.0 {
+        (value / denom.max(1.0)).clamp(0.0, 1.0)
+    } else if value > 1.5 {
         (value / 100.0).clamp(0.0, 1.0)
-    } else if value > 100.0 {
-        (value / 1280.0).clamp(0.0, 1.0)
     } else {
         value.clamp(0.0, 1.0)
     }
 }
 
-fn load_key() -> Result<String, String> {
-    for name in ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"] {
+fn load_key(names: &[&str], provider: &str) -> Result<String, String> {
+    for name in names {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -379,11 +770,14 @@ fn load_key() -> Result<String, String> {
         }
     }
     for path in env_paths() {
-        if let Some(key) = key_from_file(&path) {
+        if let Some(key) = key_from_file(&path, names) {
             return Ok(key);
         }
     }
-    Err("Found no NVIDIA API key. Put NVIDIA_API_KEY in pointy-software/.env and restart.".into())
+    Err(format!(
+        "Found no {provider} API key. Put {} in pointy-software/.env and restart.",
+        names[0]
+    ))
 }
 
 fn env_paths() -> Vec<PathBuf> {
@@ -413,7 +807,7 @@ fn env_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn key_from_file(path: &PathBuf) -> Option<String> {
+fn key_from_file(path: &PathBuf, names: &[&str]) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     for line in text.lines() {
         let line = line.trim();
@@ -424,7 +818,7 @@ fn key_from_file(path: &PathBuf) -> Option<String> {
             continue;
         };
         let key = key.trim();
-        if !matches!(key, "NVIDIA_API_KEY" | "NVIDIA_NIM_API_KEY") {
+        if !names.contains(&key) {
             continue;
         }
         let value = value.trim().trim_matches('"').trim_matches('\'');
@@ -433,4 +827,70 @@ fn key_from_file(path: &PathBuf) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Real end-to-end timing: capture + downscale + OpenRouter round-trip.
+    /// Ignored by default — run with:
+    ///   cargo test end_to_end_timing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn end_to_end_timing() {
+        let t0 = Instant::now();
+        let shot = crate::capture::capture_ask(None, 1280).expect("screen capture");
+        println!(
+            "[timing] capture+downscale+encode: {:?} ({}x{}, {} chars)",
+            t0.elapsed(),
+            shot.width,
+            shot.height,
+            shot.image.len()
+        );
+
+        let t1 = Instant::now();
+        let reply = ask_screen(
+            "What app is on screen? Answer where to click to close the active window.",
+            Some(&shot.image),
+            None,
+            Some((shot.width, shot.height)),
+        );
+        println!("[timing] model round-trip: {:?}", t1.elapsed());
+        match &reply {
+            Ok(r) => {
+                println!("[answer] {}", r.answer);
+                println!("[target] {:?}", r.target);
+            }
+            Err(e) => println!("[error] {e}"),
+        }
+        assert!(reply.is_ok(), "OpenRouter round-trip failed");
+    }
+
+    /// Walkthrough smoke test: one "what is the next step" round-trip.
+    /// Ignored by default — run with:
+    ///   cargo test next_step_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn next_step_smoke() {
+        let shot = crate::capture::capture_ask(None, 1280).expect("screen capture");
+        let t0 = Instant::now();
+        let reply = next_step(
+            "Help me send an email.",
+            &shot.image,
+            2,
+            Some((shot.width, shot.height)),
+        );
+        println!("[next_step timing] round-trip: {:?}", t0.elapsed());
+        match &reply {
+            Ok(r) => {
+                println!("[next_step status] {}", r.status);
+                println!("[next_step say] {}", r.say);
+                println!("[next_step target] {:?}", r.target);
+            }
+            Err(e) => println!("[next_step error] {e}"),
+        }
+        assert!(reply.is_ok(), "next_step round-trip failed");
+    }
 }

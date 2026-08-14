@@ -1,66 +1,32 @@
-import { askScreen, captureScope, type ClickTarget, type Shot } from "@/lib/pointy";
+import { askScreen, type AskReply, type ClickTarget } from "@/lib/pointy";
 
-export type ScreenAskReply = {
-  answer: string;
-  advice: string;
-  target: ClickTarget | null;
-};
-
-/** Shrink a PNG data URL so a 4K capture does not blow the vision request. */
-export async function shrinkScreenshot(dataUrl: string, maxEdge = 1280): Promise<string> {
-  if (!dataUrl.startsWith("data:image")) return dataUrl;
-
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
-      const width = Math.max(1, Math.round(img.width * scale));
-      const height = Math.max(1, Math.round(img.height * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
-      }
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL("image/jpeg", 0.72));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-/**
- * Photograph what the user is looking at right now. Pointy hides itself for the
- * shot, and the result carries the slice of screen it covers so a box inside it
- * can be mapped back onto the full-screen overlay.
- */
-export function grabScreen(windowId: number | null): Promise<Shot> {
-  return captureScope(windowId);
-}
+export type ScreenAskReply = AskReply;
 
 /** Move a box from shot-relative fractions to screen-relative fractions. */
-export function targetToScreen(target: ClickTarget, shot: Shot): ClickTarget {
+export function targetToScreen(
+  target: ClickTarget,
+  frame: { x: number; y: number; w: number; h: number },
+): ClickTarget {
   return {
     ...target,
-    x: shot.x + target.x * shot.w,
-    y: shot.y + target.y * shot.h,
-    w: target.w * shot.w,
-    h: target.h * shot.h,
+    x: frame.x + target.x * frame.w,
+    y: frame.y + target.y * frame.h,
+    w: target.w * frame.w,
+    h: target.h * frame.h,
   };
 }
 
-/** Ask NVIDIA NIM via Rust so the `.env` key is actually used. */
+/**
+ * Ask OpenRouter via Rust. The screenshot is captured, downscaled and sent from
+ * the backend in one hop — the reply carries the shot's monitor fractions so the
+ * target box can be mapped back onto the full screen.
+ */
 export async function askAboutScreen(
   question: string,
-  screenshot: string | null,
+  windowId: number | null,
   app: string | null,
   signal?: AbortSignal,
 ): Promise<ScreenAskReply> {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  const image = screenshot ? await shrinkScreenshot(screenshot) : null;
-  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  return askScreen(question, image, app);
+  return askScreen(question, windowId, app);
 }

@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
-// The NVIDIA key is deliberately absent here. Anything named VITE_* is inlined
-// into the bundle at build time, so the key is read only by the Rust side.
+// The API keys are deliberately absent here. Anything named VITE_* is inlined
+// into the bundle at build time, so the keys are read only by the Rust side.
 
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;

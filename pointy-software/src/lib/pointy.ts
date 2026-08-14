@@ -86,7 +86,35 @@ export interface Shot {
 export interface NimReply {
   answer: string;
   advice: string;
+  multi_step: boolean;
   target: ClickTarget | null;
+}
+
+/** `ask_screen` reply plus the capture's monitor fractions for mapping. */
+export interface AskReply extends NimReply {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Local usage-tracking totals: app/title -> seconds. */
+export interface UsageData {
+  total: Record<string, number>;
+  today: Record<string, number>;
+  day: number;
+}
+
+/** One event from the guided walkthrough. */
+export interface GuideStep {
+  kind: string;
+  step: number;
+  say: string;
+  target: ClickTarget | null;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 /** Number of bars the backend analyses. Keep in sync with audio::BANDS. */
@@ -220,12 +248,28 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
       return undefined as T;
     case "ask_screen":
       return {
-        answer: "Preview mode — NVIDIA NIM runs in the desktop app.",
+        answer: "Preview mode — OpenRouter runs in the desktop app.",
         advice: "Hold your hotkey in the Tauri window.",
+        multi_step: false,
         target: null,
+        x: 0,
+        y: 0,
+        w: 1,
+        h: 1,
       } as T;
     case "transcribe_wav":
       return "" as T;
+    case "usage_stats":
+      return { total: {}, today: {}, day: 0 } as T;
+    case "usage_question":
+      return null as T;
+    case "guide_start":
+    case "guide_stop":
+    case "guide_repeat":
+    case "speak":
+      return undefined as T;
+    case "guide_active":
+      return false as T;
     default:
       throw new Error(`Preview mode has no handler for “${cmd}”.`);
   }
@@ -302,14 +346,37 @@ export const captureScope = (windowId?: number | null) =>
 export const wakeSession = () => invoke<WakeSession>("wake_session");
 export const wakeSetTranscript = (transcript: string) =>
   invoke<void>("wake_set_transcript", { transcript });
-export const askScreen = (question: string, screenshot?: string | null, app?: string | null) =>
-  invoke<NimReply>("ask_screen", {
+export const askScreen = (question: string, windowId?: number | null, app?: string | null) =>
+  invoke<AskReply>("ask_screen", {
     question,
-    screenshot: screenshot ?? null,
-    app: app ?? null,
+    windowId: windowId ?? null,
+    appName: app ?? null,
   });
 export const transcribeWav = (wavBase64: string) =>
   invoke<string>("transcribe_wav", { wavBase64 });
+
+export const usageStats = () => invoke<UsageData>("usage_stats");
+export const usageQuestion = (question: string) =>
+  invoke<string | null>("usage_question", { question });
+
+export const guideStart = (
+  task: string,
+  windowId?: number | null,
+  firstLabel?: string | null,
+) =>
+  invoke<void>("guide_start", {
+    task,
+    windowId: windowId ?? null,
+    firstLabel: firstLabel ?? null,
+  });
+export const guideStop = () => invoke<void>("guide_stop");
+export const guideRepeat = () => invoke<void>("guide_repeat");
+export const guideActive = () => invoke<boolean>("guide_active");
+export const onGuideStep = (cb: (step: GuideStep) => void): Promise<UnlistenFn> =>
+  listen<GuideStep>("guide://step", (event) => cb(event.payload));
+
+/** Speak text through the OS voice (used when the webview has no voices). */
+export const speakText = (text: string) => invoke<void>("speak", { text });
 
 // events
 export const onCaptureProgress = (cb: (update: CaptureUpdate) => void): Promise<UnlistenFn> =>
