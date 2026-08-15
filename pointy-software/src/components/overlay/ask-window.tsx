@@ -25,7 +25,7 @@ import { AnswerMarkdown } from "@/components/overlay/answer-markdown";
 import { AppPicker } from "@/components/overlay/app-picker";
 import { Thinking } from "@/components/overlay/thinking";
 import { PointyMark } from "@/components/pointy-mark";
-import type { AppWindow, ClickTarget, GuideStep } from "@/lib/pointy";
+import type { AppWindow, ClickTarget, DotPoint, GuideStep } from "@/lib/pointy";
 
 export type TurnStatus = "asking" | "done" | "stopped" | "error";
 
@@ -34,6 +34,8 @@ export type Turn = {
   question: string;
   answer: string;
   target: ClickTarget | null;
+  /** Exact center dot from the accessibility tree, when resolved. */
+  dot: DotPoint | null;
   status: TurnStatus;
   error: string | null;
 };

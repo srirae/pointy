@@ -180,14 +180,32 @@ pub fn capture_ask(window_id: Option<u32>, max_edge: u32) -> Result<AskCapture, 
 }
 
 fn capture_region(window_id: Option<u32>) -> Result<(RgbaImage, f64, f64, f64, f64), String> {
-    let monitor = primary_monitor()?;
+    // Capture the monitor the subject window actually sits on (not always the
+    // primary), and report the crop's position as 0..1 fractions of the full
+    // virtual desktop, so the overlay — which spans every monitor — can map a
+    // control the model boxes back to the correct physical place.
+    let monitor = monitor_for_window(window_id)?;
     let full = monitor
         .capture_image()
         .map_err(|e| format!("Could not capture the screen: {e}"))?;
 
+    let (vx, vy, vw, vh) = virtual_desktop_bounds();
+    let vw = vw.max(1) as f64;
+    let vh = vh.max(1) as f64;
+    let mon_x = monitor.x().unwrap_or(0) as f64;
+    let mon_y = monitor.y().unwrap_or(0) as f64;
+    let mon_w = monitor.width().unwrap_or(1) as f64;
+    let mon_h = monitor.height().unwrap_or(1) as f64;
+
     let region = window_id.and_then(|id| monitor_fraction_of_window(&monitor, id));
     let Some((fx, fy, fw, fh)) = region else {
-        return Ok((full, 0.0, 0.0, 1.0, 1.0));
+        return Ok((
+            full,
+            (mon_x - vx as f64) / vw,
+            (mon_y - vy as f64) / vh,
+            mon_w / vw,
+            mon_h / vh,
+        ));
     };
 
     // Fractions -> pixels of *this* capture, so DPI scaling cannot skew the crop.
@@ -201,11 +219,80 @@ fn capture_region(window_id: Option<u32>) -> Result<(RgbaImage, f64, f64, f64, f
     let cropped = RgbaImage::from_fn(cw, ch, |x, y| *full.get_pixel(cx + x, cy + y));
     Ok((
         cropped,
-        cx as f64 / iw as f64,
-        cy as f64 / ih as f64,
-        cw as f64 / iw as f64,
-        ch as f64 / ih as f64,
+        (mon_x + cx as f64 - vx as f64) / vw,
+        (mon_y + cy as f64 - vy as f64) / vh,
+        cw as f64 / vw,
+        ch as f64 / vh,
     ))
+}
+
+/// The monitor whose area contains the center of the subject window (falls
+/// back to the primary monitor, then to the first available).
+fn monitor_for_window(window_id: Option<u32>) -> Result<Monitor, String> {
+    let monitors = Monitor::all().map_err(|e| format!("Could not list displays: {e}"))?;
+    if monitors.is_empty() {
+        return Err("No display found to capture.".to_string());
+    }
+
+    if let Some(id) = window_id {
+        if let Some((cx, cy)) = window_center(id) {
+            for monitor in &monitors {
+                let mx = monitor.x().unwrap_or(0);
+                let my = monitor.y().unwrap_or(0);
+                let mw = monitor.width().unwrap_or(0) as i32;
+                let mh = monitor.height().unwrap_or(0) as i32;
+                if cx >= mx && cx < mx + mw && cy >= my && cy < my + mh {
+                    return Ok(monitor.clone());
+                }
+            }
+        }
+    }
+
+    monitors
+        .iter()
+        .find(|m| m.is_primary().unwrap_or(false))
+        .cloned()
+        .or_else(|| monitors.first().cloned())
+        .ok_or_else(|| "No display found to capture.".to_string())
+}
+
+/// Center of a window in virtual-screen (physical) pixels.
+fn window_center(id: u32) -> Option<(i32, i32)> {
+    let window = Window::all()
+        .ok()?
+        .into_iter()
+        .find(|w| w.id().map(|found| found == id).unwrap_or(false))?;
+    let cx = window.x().ok()? + window.width().ok()? as i32 / 2;
+    let cy = window.y().ok()? + window.height().ok()? as i32 / 2;
+    Some((cx, cy))
+}
+
+/// Union of every monitor's bounds: the full virtual desktop, in physical
+/// pixels. The origin can be negative when a monitor sits left of/above the
+/// primary.
+pub fn virtual_desktop_bounds() -> (i32, i32, u32, u32) {
+    let monitors = Monitor::all().unwrap_or_default();
+    if monitors.is_empty() {
+        return (0, 0, 0, 0);
+    }
+    let min_x = monitors.iter().filter_map(|m| m.x().ok()).min().unwrap_or(0);
+    let min_y = monitors.iter().filter_map(|m| m.y().ok()).min().unwrap_or(0);
+    let max_r = monitors
+        .iter()
+        .filter_map(|m| Some(m.x().ok()? + m.width().ok()? as i32))
+        .max()
+        .unwrap_or(0);
+    let max_b = monitors
+        .iter()
+        .filter_map(|m| Some(m.y().ok()? + m.height().ok()? as i32))
+        .max()
+        .unwrap_or(0);
+    (
+        min_x,
+        min_y,
+        (max_r - min_x).max(0) as u32,
+        (max_b - min_y).max(0) as u32,
+    )
 }
 
 /// Where a window sits on the monitor, as 0..1 fractions clipped to the screen.
@@ -237,15 +324,6 @@ fn monitor_fraction_of_window(monitor: &Monitor, id: u32) -> Option<(f64, f64, f
         (right - left) as f64 / mw as f64,
         (bottom - top) as f64 / mh as f64,
     ))
-}
-
-fn primary_monitor() -> Result<Monitor, String> {
-    let monitors = Monitor::all().map_err(|e| format!("Could not list displays: {e}"))?;
-    monitors
-        .into_iter()
-        .find(|monitor| monitor.is_primary().unwrap_or(false))
-        .or_else(|| Monitor::all().ok().and_then(|all| all.into_iter().next()))
-        .ok_or_else(|| "No display found to capture.".to_string())
 }
 
 fn encode_png(image: &RgbaImage) -> Result<String, String> {

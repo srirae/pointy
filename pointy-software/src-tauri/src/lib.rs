@@ -13,6 +13,7 @@
 
 mod audio;
 mod capture;
+mod events;
 mod guide;
 mod hotkey;
 mod keyboard;
@@ -215,6 +216,10 @@ struct AskReply {
     advice: String,
     multi_step: bool,
     target: Option<nim::ClickTarget>,
+    /// Exact center of the resolved control, physical px + virtual-desktop
+    /// fractions (see uia::DotPoint). Present when the accessibility tree
+    /// matched the model's label.
+    dot: Option<uia::DotPoint>,
     x: f64,
     y: f64,
     w: f64,
@@ -236,12 +241,13 @@ async fn ask_screen(
             app_name.as_deref(),
             Some((shot.width, shot.height)),
         )?;
-        let target = refine_target(window_id, &shot, reply.target);
+        let (target, dot) = refine_target(window_id, &shot, reply.target);
         Ok(AskReply {
             answer: reply.answer,
             advice: reply.advice,
             multi_step: reply.multi_step,
             target,
+            dot,
             x: shot.x,
             y: shot.y,
             w: shot.w,
@@ -253,17 +259,18 @@ async fn ask_screen(
 }
 
 /// Replace the model's guessed box with the real UI Automation rectangle when
-/// the element can be found; otherwise keep the model's coordinates.
+/// the element can be found (otherwise keep the model's coordinates), and
+/// surface the exact dot the overlay should draw.
 #[cfg(windows)]
 fn refine_target(
     window_id: Option<u32>,
     shot: &capture::AskCapture,
     target: Option<nim::ClickTarget>,
-) -> Option<nim::ClickTarget> {
+) -> (Option<nim::ClickTarget>, Option<uia::DotPoint>) {
     // UIA refinement needs a concrete window; without one keep the model's box.
     match (target, window_id) {
-        (Some(target), Some(id)) => uia::refine(id, shot, &target).or(Some(target)),
-        (target, _) => target,
+        (Some(target), Some(id)) => uia::resolve(id, shot, &target),
+        (target, _) => (target, None),
     }
 }
 
@@ -272,8 +279,8 @@ fn refine_target(
     _window_id: Option<u32>,
     _shot: &capture::AskCapture,
     target: Option<nim::ClickTarget>,
-) -> Option<nim::ClickTarget> {
-    target
+) -> (Option<nim::ClickTarget>, Option<uia::DotPoint>) {
+    (target, None)
 }
 
 #[tauri::command]

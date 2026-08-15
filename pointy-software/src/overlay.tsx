@@ -70,6 +70,9 @@ export function Overlay() {
   const spokenIds = useRef(new Set<number>());
   /** False once the user types, so speech stops overwriting their edits. */
   const dictating = useRef(false);
+  /** Set true when the user stops the walkthrough, so late backend events
+   * cannot re-show the banner or speak after Stop. */
+  const guideStoppedRef = useRef(false);
 
   const voice = useOverlayVoice(listening, listenGen);
   const busy = turns.some((turn) => turn.status === "asking");
@@ -171,7 +174,7 @@ export function Overlay() {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     onGuideStep((step) => {
-      if (cancelled) return;
+      if (cancelled || guideStoppedRef.current) return;
       setGuideStep(step);
       if (step.kind === "done") setGuide((g) => ({ ...g, active: false }));
     }).then((off) => {
@@ -185,7 +188,7 @@ export function Overlay() {
   }, []);
 
   useEffect(() => {
-    if (!guideStep || !speak) return;
+    if (!guideStep || !speak || guideStep.speak === false) return;
     const text = guideStep.say.replace(/[*_`#>\[\]()~]/g, "").trim();
     if (!text) return;
     speakAloud(text);
@@ -209,6 +212,7 @@ export function Overlay() {
     abortRef.current = null;
     window.speechSynthesis?.cancel();
     spokenIds.current.clear();
+    guideStoppedRef.current = true;
     void guideStop();
     setGuide({ active: false, task: "", step: 1 });
     setGuideStep(null);
@@ -275,7 +279,7 @@ export function Overlay() {
       const usage = await usageQuestion(question);
       if (ctrl.signal.aborted) return;
       if (usage) {
-        settle({ status: "done", answer: usage, target: null, error: null });
+        settle({ status: "done", answer: usage, target: null, dot: null, error: null });
         return;
       }
 
@@ -291,6 +295,7 @@ export function Overlay() {
         status: "done",
         answer: visibleAnswer(reply.answer, reply.advice),
         target,
+        dot: reply.dot ?? null,
         error: null,
       });
 
@@ -299,6 +304,7 @@ export function Overlay() {
       // accessibility tree for its completion.
       if (reply.multi_step) {
         spokenIds.current.add(turnId); // the walkthrough speaks step one once
+        guideStoppedRef.current = false;
         setGuide({ active: true, task: question, step: 1 });
         setGuideStep({
           kind: "step",
@@ -336,7 +342,7 @@ export function Overlay() {
     setPointedTurn(null);
     setTurns((current) => [
       ...current,
-      { id, question, answer: "", target: null, status: "asking", error: null },
+      { id, question, answer: "", target: null, dot: null, status: "asking", error: null },
     ]);
     void run(id, question, live.current.scope);
   }, [run, stopListening]);
@@ -364,7 +370,7 @@ export function Overlay() {
       setTurns((current) =>
         current.map((kept) =>
           kept.id === turn.id
-            ? { ...kept, status: "asking", answer: "", target: null, error: null }
+            ? { ...kept, status: "asking", answer: "", target: null, dot: null, error: null }
             : kept,
         ),
       );
@@ -391,6 +397,7 @@ export function Overlay() {
   }, [loadWindows, stopListening]);
 
   const stopGuide = useCallback(() => {
+    guideStoppedRef.current = true;
     void guideStop();
     setGuide((g) => ({ ...g, active: false }));
     setGuideStep(null);
@@ -528,7 +535,10 @@ export function Overlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <ClickHint target={pointed.target} />
+            <ClickHint
+              target={pointed.target}
+              center={pointed.dot ? { x: pointed.dot.cx, y: pointed.dot.cy } : undefined}
+            />
           </motion.div>
         )}
       </AnimatePresence>

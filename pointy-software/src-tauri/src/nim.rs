@@ -430,65 +430,28 @@ fn complete(
     Ok(parse_reply(&content, dims))
 }
 
-fn complete_guide(
-    url: &str,
-    json_mode: bool,
-    key: &str,
-    model: &str,
-    prompt: &str,
-    image: Option<&str>,
-    dims: Option<(u32, u32)>,
-    provider: &'static str,
-    no_think: bool,
-    system: &str,
-) -> Result<GuideReply, String> {
-    let user = if let Some(image_url) = image {
-        serde_json::json!([
-            { "type": "image_url", "image_url": { "url": image_url } },
-            { "type": "text", "text": prompt }
-        ])
-    } else {
-        serde_json::Value::String(prompt.to_string())
-    };
-
-    let mut payload = serde_json::json!({
-        "model": model,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0.2,
-        "top_p": 0.7,
-        "max_tokens": 384,
-        "stream": false
-    });
-    if json_mode {
-        payload["response_format"] = serde_json::json!({ "type": "json_object" });
-    }
-    if no_think {
-        payload["reasoning_effort"] = serde_json::json!("none");
-    }
-
-    let body = post_json(url, &payload, key, provider)?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("Bad provider JSON: {e}"))?;
-    let raw = parsed["choices"][0]["message"]["content"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "The model returned an empty answer.".to_string())?;
-    let content = strip_think(raw);
-
-    Ok(parse_guide(&content, dims))
+/// Timestamps (epoch milliseconds) of one streamed model round-trip.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamTimings {
+    /// Request sent.
+    pub t2: u128,
+    /// First content token received (time-to-first-token).
+    pub t3: u128,
+    /// Full response received.
+    pub t4: u128,
 }
 
-/// Produce the next single step of a guided task from the current screenshot.
-pub fn next_step(
+/// Like `next_step`, but streams the response so the first complete sentence
+/// can be spoken before the rest has finished generating. `on_first_sentence`
+/// is called exactly once, the moment the first sentence of the `say` field is
+/// complete.
+pub fn next_step_streaming(
     task: &str,
     screenshot: &str,
     step_number: u32,
     image_dims: Option<(u32, u32)>,
-) -> Result<GuideReply, String> {
+    on_first_sentence: &dyn Fn(&str),
+) -> Result<(GuideReply, StreamTimings), String> {
     let image = screenshot.starts_with("data:image").then_some(screenshot);
     let prompt = format!(
         "Task: {task}\nThe user just finished the previous step. This is step {step_number}. This screenshot is the current state. Reply JSON only with the single next action, or \"done\" if the task is finished."
@@ -504,27 +467,184 @@ pub fn next_step(
             Err(_) => continue,
         };
         for model in provider.vision {
-            match complete_guide(
-                provider.url,
-                provider.json_mode,
+            match complete_guide_streaming(
+                provider,
                 &key,
                 model,
                 &prompt,
                 image,
                 image_dims,
-                provider.name,
-                provider.no_think,
-                WALKTHROUGH_SYSTEM,
+                on_first_sentence,
             ) {
-                Ok(reply) => return Ok(reply),
+                Ok(pair) => return Ok(pair),
                 Err(err) => {
-                    eprintln!("[nim] next {} {model}: {err}", provider.name);
+                    eprintln!("[nim] stream {} {model}: {err}", provider.name);
                     last = err;
                 }
             }
         }
     }
     Err(format!("No free model answered. {last}"))
+}
+
+fn complete_guide_streaming(
+    provider: &'static Provider,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    image: Option<&str>,
+    dims: Option<(u32, u32)>,
+    on_first_sentence: &dyn Fn(&str),
+) -> Result<(GuideReply, StreamTimings), String> {
+    let user = if let Some(image_url) = image {
+        serde_json::json!([
+            { "type": "image_url", "image_url": { "url": image_url } },
+            { "type": "text", "text": prompt }
+        ])
+    } else {
+        serde_json::Value::String(prompt.to_string())
+    };
+
+    let mut payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": WALKTHROUGH_SYSTEM },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0.2,
+        "top_p": 0.7,
+        "max_tokens": 384,
+        "stream": true
+    });
+    if provider.json_mode {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    if provider.no_think {
+        payload["reasoning_effort"] = serde_json::json!("none");
+    }
+
+    let mut first_sent = false;
+    let mut acc = String::new();
+    let (content, t2, t3, t4) = post_stream(
+        provider.url,
+        &payload,
+        key,
+        provider.name,
+        |delta| {
+            acc.push_str(delta);
+            if !first_sent {
+                if let Some(sentence) = first_sentence_of_say(&acc) {
+                    first_sent = true;
+                    on_first_sentence(sentence.as_str());
+                }
+            }
+        },
+    )?;
+
+    let content = strip_think(&content);
+    let reply = parse_guide(&content, dims);
+    Ok((reply, StreamTimings { t2, t3, t4 }))
+}
+
+/// POST with `stream: true` and fold the SSE deltas into the full content.
+/// Returns (content, t2, t3, t4) — request-sent, first-token and full-response
+/// timestamps in epoch milliseconds.
+fn post_stream(
+    url: &str,
+    payload: &serde_json::Value,
+    key: &str,
+    provider: &'static str,
+    mut on_delta: impl FnMut(&str),
+) -> Result<(String, u128, u128, u128), String> {
+    use std::io::Read;
+
+    let t2 = crate::events::now_millis();
+    let response = client()
+        .post(url)
+        .bearer_auth(key)
+        .header("Accept", "application/json")
+        .header("X-Title", "Pointy")
+        .json(payload)
+        .send()
+        .map_err(|e| {
+            mark_cooldown(provider);
+            format!("Network error: {}", describe_error(&e))
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().map_err(|e| e.to_string())?;
+        mark_cooldown(provider);
+        return Err(format!("{status}: {}", body.chars().take(180).collect::<String>()));
+    }
+
+    let mut full = String::new();
+    let mut buf = String::new();
+    let mut t3: Option<u128> = None;
+    let mut reader = response;
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("Stream read error: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        while let Some(nl) = buf.find('\n') {
+            let line: String = buf.drain(..=nl).collect();
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(delta) = value["choices"][0]["delta"]["content"].as_str() {
+                    if !delta.is_empty() {
+                        if t3.is_none() {
+                            t3 = Some(crate::events::now_millis());
+                        }
+                        full.push_str(delta);
+                        on_delta(delta);
+                    }
+                }
+            }
+        }
+    }
+    let t4 = crate::events::now_millis();
+    Ok((full, t2, t3.unwrap_or(t4), t4))
+}
+
+/// Extract the first complete sentence of the streamed JSON's `say` field, if
+/// it has finished yet. The raw stream accumulates as
+/// `{"status":"next","say":"Click the blue...` — cut at the first sentence
+/// terminator inside `say`.
+fn first_sentence_of_say(acc: &str) -> Option<String> {
+    let marker = "\"say\":\"";
+    let idx = acc.find(marker)?;
+    let start = idx + marker.len();
+    let rest = &acc[start..];
+    let mut end = None;
+    for (i, ch) in rest.char_indices() {
+        if ch == '.' || ch == '!' || ch == '?' {
+            end = Some(i);
+            break;
+        }
+    }
+    let end = end?;
+    let sentence = rest[..end + 1].trim();
+    if sentence.is_empty() {
+        return None;
+    }
+    let sentence = strip_think(sentence).trim().to_string();
+    if sentence.is_empty() {
+        None
+    } else {
+        Some(sentence)
+    }
 }
 
 fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
@@ -868,7 +988,7 @@ mod tests {
         assert!(reply.is_ok(), "OpenRouter round-trip failed");
     }
 
-    /// Walkthrough smoke test: one "what is the next step" round-trip.
+    /// Walkthrough smoke test: one streamed "what is the next step" round-trip.
     /// Ignored by default — run with:
     ///   cargo test next_step_smoke -- --ignored --nocapture
     #[test]
@@ -876,15 +996,24 @@ mod tests {
     fn next_step_smoke() {
         let shot = crate::capture::capture_ask(None, 1280).expect("screen capture");
         let t0 = Instant::now();
-        let reply = next_step(
+        let reply = next_step_streaming(
             "Help me send an email.",
             &shot.image,
             2,
             Some((shot.width, shot.height)),
+            &|sentence| println!("[next_step first sentence] {sentence}"),
         );
         println!("[next_step timing] round-trip: {:?}", t0.elapsed());
         match &reply {
-            Ok(r) => {
+            Ok((r, timings)) => {
+                println!(
+                    "[next_step timings] t2={} t3={} t4={} first_token={}ms generation={}ms",
+                    timings.t2,
+                    timings.t3,
+                    timings.t4,
+                    timings.t3.saturating_sub(timings.t2),
+                    timings.t4.saturating_sub(timings.t3)
+                );
                 println!("[next_step status] {}", r.status);
                 println!("[next_step say] {}", r.say);
                 println!("[next_step target] {:?}", r.target);
@@ -892,5 +1021,70 @@ mod tests {
             Err(e) => println!("[next_step error] {e}"),
         }
         assert!(reply.is_ok(), "next_step round-trip failed");
+    }
+
+    /// Full Part-3 cycle: trigger a real accessibility event, then flow through
+    /// capture → streamed model call → dot → TTS, logging the LATENCY line.
+    /// Run with:
+    ///   cargo test latency_cycle -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn latency_cycle() {
+        use std::sync::{Arc, Mutex};
+
+        // T0: register listeners, then cause a genuine UI change.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let listener = crate::events::listen(
+            None,
+            Arc::new(move |_kind| {
+                let _ = tx.send(());
+            }),
+        )
+        .expect("register a11y listeners");
+        std::thread::sleep(Duration::from_millis(600));
+        let mut child = std::process::Command::new("notepad.exe")
+            .spawn()
+            .expect("spawn notepad");
+        let t0 = rx
+            .recv_timeout(Duration::from_secs(8))
+            .map(|_| crate::events::now_millis())
+            .expect("no a11y event fired");
+
+        // T1: capture, cropped to the focused window.
+        let window = crate::uia::foreground_window();
+        let shot = crate::capture::capture_ask(window, 1280).expect("capture");
+        let t1 = crate::events::now_millis();
+
+        // T2..T4 (from the stream) + T6 (first sentence spoken).
+        let t6: Arc<Mutex<Option<u128>>> = Arc::new(Mutex::new(None));
+        let t6_clone = t6.clone();
+        let result = crate::nim::next_step_streaming(
+            "Help me write a short note.",
+            &shot.image,
+            2,
+            Some((shot.width, shot.height)),
+            &move |sentence| {
+                *t6_clone.lock().unwrap() = Some(crate::events::now_millis());
+                eprintln!("[latency] T6 speak (first sentence): {sentence}");
+                let text = sentence.to_string();
+                std::thread::spawn(move || {
+                    let _ = crate::tts::speak(&text);
+                });
+            },
+        );
+        let (reply, timings) = result.expect("streamed next_step");
+
+        // T5: resolve the dot against the real accessibility tree (logs POSITION).
+        if let (Some(target), Some(id)) = (reply.target.as_ref(), window) {
+            let _ = crate::uia::resolve(id, &shot, target);
+        }
+        let t5 = crate::events::now_millis();
+        let t6v = t6.lock().unwrap().unwrap_or(timings.t4);
+
+        println!("[latency reply] status={} say={}", reply.status, reply.say);
+        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6v);
+
+        let _ = child.kill();
+        listener.stop();
     }
 }

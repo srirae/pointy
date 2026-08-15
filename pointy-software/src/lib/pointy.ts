@@ -90,12 +90,32 @@ export interface NimReply {
   target: ClickTarget | null;
 }
 
+/** Exact physical point of a resolved control (see uia::DotPoint). */
+export interface DotPoint {
+  label: string;
+  raw_x: number;
+  raw_y: number;
+  raw_w: number;
+  raw_h: number;
+  dpi_scale: number;
+  dot_x: number;
+  dot_y: number;
+  fx: number;
+  fy: number;
+  fw: number;
+  fh: number;
+  /** Center of the box as 0..1 fractions of the virtual desktop. */
+  cx: number;
+  cy: number;
+}
+
 /** `ask_screen` reply plus the capture's monitor fractions for mapping. */
 export interface AskReply extends NimReply {
   x: number;
   y: number;
   w: number;
   h: number;
+  dot: DotPoint | null;
 }
 
 /** Local usage-tracking totals: app/title -> seconds. */
@@ -115,6 +135,8 @@ export interface GuideStep {
   y: number;
   w: number;
   h: number;
+  /** false when the sentence was already spoken via streaming. */
+  speak?: boolean;
 }
 
 /** Number of bars the backend analyses. Keep in sync with audio::BANDS. */
@@ -252,6 +274,7 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
         advice: "Hold your hotkey in the Tauri window.",
         multi_step: false,
         target: null,
+        dot: null,
         x: 0,
         y: 0,
         w: 1,

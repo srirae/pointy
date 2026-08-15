@@ -6,8 +6,18 @@ import type { ClickTarget } from "@/lib/pointy";
  * Glow the real control's edges. Big, high-contrast, with a soft *slow* pulse
  * (never a fast blink) and a large label chip so someone with low vision knows
  * exactly what to press.
+ *
+ * When `center` is given (the exact physical point resolved from the
+ * accessibility tree), a solid dot marks that precise spot so the user knows
+ * where to click, independent of the box outline.
  */
-export function ClickHint({ target }: { target: ClickTarget }) {
+export function ClickHint({
+  target,
+  center,
+}: {
+  target: ClickTarget;
+  center?: { x: number; y: number };
+}) {
   const left = `${target.x * 100}%`;
   const top = `${target.y * 100}%`;
   const width = `${Math.max(2.5, target.w * 100)}%`;
@@ -52,6 +62,25 @@ export function ClickHint({ target }: { target: ClickTarget }) {
           {target.label || "This one"}
         </motion.span>
       </motion.div>
+
+      {center && (
+        <motion.div
+          className="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{
+            left: `${center.x * 100}%`,
+            top: `${center.y * 100}%`,
+            background: "#ffa61f",
+            border: "2px solid #ffffff",
+            boxShadow: "0 0 14px 4px rgba(255,166,31,0.9)",
+          }}
+          initial={{ opacity: 0, scale: 0.6 }}
+          animate={{ opacity: 1, scale: [1, 1.25, 1] }}
+          transition={{
+            opacity: { duration: 0.2 },
+            scale: { duration: 2.8, repeat: Infinity, ease: "easeInOut" },
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -233,6 +233,17 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
 }
 
 fn place_fullscreen(window: &WebviewWindow) {
+    // Span the full virtual desktop so the dot can land on any monitor,
+    // including one positioned left of or above the primary. Origin and size
+    // are physical pixels.
+    let (vx, vy, vw, vh) = crate::capture::virtual_desktop_bounds();
+    if vw > 0 && vh > 0 {
+        let _ = window.set_position(PhysicalPosition::new(vx, vy));
+        let _ = window.set_size(PhysicalSize::new(vw, vh));
+        return;
+    }
+
+    // Fallback for setups where monitor enumeration failed.
     let monitor = match window.current_monitor() {
         Ok(Some(monitor)) => Some(monitor),
         _ => window.primary_monitor().ok().flatten(),
