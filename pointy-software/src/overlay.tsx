@@ -12,13 +12,15 @@ import {
   overlaySetHitRect,
   guideStart,
   guideStop,
-  guideRepeat,
   onGuideStep,
+  onGuideWarn,
+  onGuideDiagnostic,
   overlaySetPassthrough,
   usageQuestion,
   wakeSetTranscript,
   windowsList,
   speakText,
+  stopSpeaking,
   type AppWindow,
   type GuideStep,
 } from "@/lib/pointy";
@@ -62,6 +64,9 @@ export function Overlay() {
     step: 1,
   });
   const [guideStep, setGuideStep] = useState<GuideStep | null>(null);
+  /** Timestamp of the last misclick warning, so the dot can flash briefly. */
+  const [guideWarn, setGuideWarn] = useState<number | null>(null);
+  const [guidePhase, setGuidePhase] = useState("waiting_for_action");
 
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -175,7 +180,16 @@ export function Overlay() {
     let cancelled = false;
     onGuideStep((step) => {
       if (cancelled || guideStoppedRef.current) return;
-      setGuideStep(step);
+      // Streaming emits speech before the full target JSON arrives. Update only
+      // the sentence so the already-correct dot never disappears mid-request.
+      if (step.kind === "speech") {
+        setGuideStep((current) =>
+          current ? { ...current, say: step.say, speak: true } : step,
+        );
+      } else {
+        setGuideStep(step);
+      }
+      setGuideWarn(null);
       if (step.kind === "done") setGuide((g) => ({ ...g, active: false }));
     }).then((off) => {
       if (cancelled) off();
@@ -186,6 +200,48 @@ export function Overlay() {
       unlisten?.();
     };
   }, []);
+
+  // Trust Layer diagnostics are local and make it clear why Pointy is waiting
+  // or advancing without exposing model plumbing to the user.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    onGuideDiagnostic((diagnostic) => {
+      if (cancelled || guideStoppedRef.current) return;
+      setGuidePhase(diagnostic.phase);
+    }).then((off) => {
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Misclick warning: brighten the correct dot for a moment. Audio is played by
+  // the backend (pre-cached), so here we only drive the visual pulse.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    onGuideWarn(() => {
+      if (cancelled || guideStoppedRef.current) return;
+      setGuideWarn(Date.now());
+    }).then((off) => {
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (guideWarn === null) return;
+    const timer = window.setTimeout(() => setGuideWarn(null), 1300);
+    return () => window.clearTimeout(timer);
+  }, [guideWarn]);
 
   useEffect(() => {
     if (!guideStep || !speak || guideStep.speak === false) return;
@@ -211,11 +267,14 @@ export function Overlay() {
     abortRef.current?.abort();
     abortRef.current = null;
     window.speechSynthesis?.cancel();
+    void stopSpeaking();
     spokenIds.current.clear();
     guideStoppedRef.current = true;
     void guideStop();
     setGuide({ active: false, task: "", step: 1 });
     setGuideStep(null);
+    setGuideWarn(null);
+    setGuidePhase("waiting_for_action");
     setOpen(false);
     setLeaving(false);
     setPicking(false);
@@ -302,7 +361,7 @@ export function Overlay() {
       // Multi-step task → start the guided walkthrough automatically. The first
       // step is the answer we just got; the backend begins watching the
       // accessibility tree for its completion.
-      if (reply.multi_step) {
+      if (canStartGuide(reply)) {
         spokenIds.current.add(turnId); // the walkthrough speaks step one once
         guideStoppedRef.current = false;
         setGuide({ active: true, task: question, step: 1 });
@@ -310,13 +369,23 @@ export function Overlay() {
           kind: "step",
           step: 1,
           say: reply.answer,
+          action: reply.action,
+          confidence: reply.confidence,
           target: reply.target, // shot-relative; mapped by targetToScreen
+          dot: reply.dot ?? null,
           x: reply.x,
           y: reply.y,
           w: reply.w,
           h: reply.h,
+          speak: true,
         });
-        void guideStart(question, app?.id ?? null, reply.target?.label ?? null);
+        void guideStart(
+          question,
+          app?.id ?? null,
+          reply.target?.label ?? null,
+          reply.action,
+          reply.confidence,
+        );
       }
     } catch (reason) {
       if (ctrl.signal.aborted) return;
@@ -399,13 +468,20 @@ export function Overlay() {
   const stopGuide = useCallback(() => {
     guideStoppedRef.current = true;
     void guideStop();
+    window.speechSynthesis?.cancel();
+    void stopSpeaking();
     setGuide((g) => ({ ...g, active: false }));
     setGuideStep(null);
+    setGuideWarn(null);
+    setGuidePhase("waiting_for_action");
   }, []);
 
   const repeatGuide = useCallback(() => {
-    void guideRepeat();
-  }, []);
+    // Replay the instruction already on screen. Keeping this local avoids a
+    // second backend event and guarantees the first step can be repeated before
+    // the guide thread has emitted anything.
+    if (guideStep?.say) speakAloud(guideStep.say);
+  }, [guideStep, speakAloud]);
 
   const copy = useCallback((turn: Turn) => {
     void navigator.clipboard?.writeText(turn.answer).catch(() => {});
@@ -505,6 +581,7 @@ export function Overlay() {
 
   const pointed = turns.find((turn) => turn.id === pointedTurn) ?? null;
   const guideTarget = guideStep?.target ? targetToScreen(guideStep.target, guideStep) : null;
+  const guideDot = guideStep?.dot ?? null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-transparent">
@@ -552,7 +629,11 @@ export function Overlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <ClickHint target={guideTarget} />
+            <ClickHint
+              target={guideTarget}
+              center={guideDot ? { x: guideDot.cx, y: guideDot.cy } : undefined}
+              flash={guideWarn !== null}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -608,6 +689,7 @@ export function Overlay() {
                 speakEnabled={speak}
                 onToggleSpeak={() => setSpeak((s) => !s)}
                 guideActive={guide.active}
+                guidePhase={guidePhase}
                 guideStep={guideStep}
                 onRepeatGuide={repeatGuide}
                 onStopGuide={stopGuide}
@@ -636,6 +718,26 @@ function visibleAnswer(answer: string, advice: string) {
   const extra = stripModelJunk(advice);
   if (!extra || extra === main || /indicate|point it|target\s*:/i.test(extra)) return main;
   return `${main}\n\n${extra}`;
+}
+
+function canStartGuide(reply: {
+  multi_step: boolean;
+  target: unknown;
+  dot: unknown;
+  action: string;
+  confidence: number;
+}) {
+  // A walkthrough must have a locally verifiable first target. If the model is
+  // unsure, keep the safe single answer instead of starting a guide that can
+  // neither point nor prove completion.
+  const actions = new Set(["click", "type", "select", "toggle", "submit", "open"]);
+  return (
+    reply.multi_step &&
+    reply.target !== null &&
+    reply.dot !== null &&
+    reply.confidence >= 0.65 &&
+    actions.has(reply.action.trim().toLowerCase())
+  );
 }
 
 function stripModelJunk(text: string) {

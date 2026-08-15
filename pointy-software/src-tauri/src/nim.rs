@@ -196,7 +196,7 @@ fn post_json(
 const SYSTEM: &str = r#"You are Pointy, a screen guide. You receive a screenshot taken at the moment the user sent their question, cropped to the app they chose to work on. Pointy's own glass was hidden for that shot.
 
 Respond with ONLY valid JSON (no markdown fences, no extra text):
-{"answer":"1-2 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","multi_step":false,"target":{"label":"Send","x":0.22,"y":0.12,"w":0.08,"h":0.04}}
+{"answer":"1-2 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","multi_step":false,"action":"click","confidence":0.92,"target":{"label":"Send","x":0.22,"y":0.12,"w":0.08,"h":0.04}}
 
 Rules:
 - Answer for the app in the image (Cursor, VS Code, Chrome, Word, Explorer, …). Describe only controls you can actually see.
@@ -211,20 +211,25 @@ Rules:
 - target is the EXACT bounding box of the UI element they asked about, as fractions 0-1 of the image: x,y = top-left, w,h = width and height. A glowing border is drawn on those edges, so the box must hug the control — not a tiny marker, not a random corner, not the whole image.
 - Never set target to Pointy or this assistant's panel.
 - If you cannot see a clickable control, set "target": null and still answer from what you can see.
-- Set "multi_step": true only when finishing the task needs more than one action (filling out a form, signing up, joining a call). For a single click or a simple question, set false. When true, the answer should state only the first step, in one short plain sentence."#;
+- Set "multi_step": true only when finishing the task needs more than one action (filling out a form, signing up, joining a call). For a single click or a simple question, set false. When true, the answer should state only the first step, in one short plain sentence.
+- action must be one of click, type, select, toggle, submit, open, or unknown.
+- confidence is 0 to 1. Use a low value when the target is partly hidden or ambiguous."#;
 
 const WALKTHROUGH_SYSTEM: &str = r#"You are Pointy, a patient guide helping someone finish a task one step at a time. The user may be older or less comfortable with computers. Be warm and plain-spoken — short words, no jargon.
 
 Respond with ONLY valid JSON (no markdown fences, no extra text):
-{"status":"next","say":"one short plain sentence telling the single next action","target":{"label":"Continue","x":0.1,"y":0.2,"w":0.08,"h":0.04}}
+{"status":"next","say":"one short plain sentence telling the single next action","action":"click","confidence":0.92,"target":{"label":"Continue","x":0.1,"y":0.2,"w":0.08,"h":0.04}}
 When the task is already finished, respond:
 {"status":"done","say":"one warm short sentence saying it is finished","target":null}
 
 Rules:
 - One action at a time. Never list more than one step.
 - say is one short sentence, at most ~15 words, meant to be spoken aloud.
+- Never say "Nice, that's done", "that's done", or any progress confirmation. Give only the next action.
 - target is the EXACT bounding box of the element to act on next, as 0-1 fractions of the image. null when there is nothing to click.
 - label is the element's short, exact name as the app calls it.
+- action must be one of click, type, select, toggle, submit, open, or unknown.
+- confidence is 0 to 1. If the target is unclear, use a low confidence and target null.
 - Never mention Pointy. Never tell the user to click Pointy.
 - If the task is already finished in this screenshot, return status "done"."#;
 
@@ -242,6 +247,8 @@ pub struct NimReply {
     pub answer: String,
     pub advice: String,
     pub multi_step: bool,
+    pub action: String,
+    pub confidence: f64,
     pub target: Option<ClickTarget>,
 }
 
@@ -249,6 +256,8 @@ pub struct NimReply {
 pub struct GuideReply {
     pub status: String,
     pub say: String,
+    pub action: String,
+    pub confidence: f64,
     pub target: Option<ClickTarget>,
 }
 
@@ -264,6 +273,8 @@ pub fn ask_screen(
             answer: "Say or type what you want to do on this screen.".into(),
             advice: "Hold your hotkey and speak, or type your question.".into(),
             multi_step: false,
+            action: "unknown".into(),
+            confidence: 1.0,
             target: None,
         });
     }
@@ -385,7 +396,8 @@ fn complete(
         None => String::new(),
     };
     let prompt = format!(
-        "{subject}The user asked: {question}\n\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only."
+        "{subject}The user asked: {question}\n\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        playbook_hint(question)
     );
     let user = if let Some(url) = image {
         serde_json::json!([
@@ -534,8 +546,11 @@ fn complete_guide_streaming(
             acc.push_str(delta);
             if !first_sent {
                 if let Some(sentence) = first_sentence_of_say(&acc) {
-                    first_sent = true;
-                    on_first_sentence(sentence.as_str());
+                    let sentence = sanitize_guide_say(&sentence);
+                    if !sentence.is_empty() {
+                        first_sent = true;
+                        on_first_sentence(sentence.as_str());
+                    }
                 }
             }
         },
@@ -627,24 +642,52 @@ fn first_sentence_of_say(acc: &str) -> Option<String> {
     let idx = acc.find(marker)?;
     let start = idx + marker.len();
     let rest = &acc[start..];
-    let mut end = None;
-    for (i, ch) in rest.char_indices() {
-        if ch == '.' || ch == '!' || ch == '?' {
-            end = Some(i);
+    let mut cursor = 0usize;
+
+    // Skip a model's stale confirmation if it ignored the system prompt. Do
+    // not speak that sentence, and wait for the actual instruction instead.
+    for _ in 0..2 {
+        let end = rest[cursor..]
+            .char_indices()
+            .find_map(|(offset, ch)| (matches!(ch, '.' | '!' | '?')).then_some(cursor + offset))?;
+        let sentence = rest[cursor..=end].trim();
+        if !is_progress_confirmation(sentence) {
+            let sentence = strip_think(sentence).trim().to_string();
+            return (!sentence.is_empty()).then_some(sentence);
+        }
+        cursor = end + 1;
+        if cursor >= rest.len() {
+            return None;
+        }
+    }
+    None
+}
+
+fn is_progress_confirmation(text: &str) -> bool {
+    let lower = text
+        .trim()
+        .trim_matches(['-', '—', ' ', ',', '.', '!', '?'])
+        .to_ascii_lowercase();
+    lower == "nice, that's done"
+        || lower == "nice that's done"
+        || lower == "that's done"
+        || lower == "that is done"
+}
+
+/// Remove confirmation prefixes that slipped through a provider's instruction
+/// following. The guide should say only what to do next.
+fn sanitize_guide_say(text: &str) -> String {
+    let mut value = strip_think(text).trim().to_string();
+    for prefix in ["Nice, that's done", "Nice that's done", "That's done", "That is done"] {
+        if value.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+            value = value[prefix.len()..]
+                .trim_start_matches([' ', ',', '.', '!', '?', '-', '—'])
+                .trim()
+                .to_string();
             break;
         }
     }
-    let end = end?;
-    let sentence = rest[..end + 1].trim();
-    if sentence.is_empty() {
-        return None;
-    }
-    let sentence = strip_think(sentence).trim().to_string();
-    if sentence.is_empty() {
-        None
-    } else {
-        Some(sentence)
-    }
+    value
 }
 
 fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
@@ -663,16 +706,28 @@ fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
                 .and_then(|v| v.as_str())
                 .unwrap_or("correct")
                 .to_lowercase();
-            let say = value
-                .get("say")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string();
+            let say = sanitize_guide_say(
+                value
+                    .get("say")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .unwrap_or(""),
+            );
+            let say = if say.is_empty() {
+                if status == "done" {
+                    "All done.".to_string()
+                } else {
+                    "Please follow the highlighted step.".to_string()
+                }
+            } else {
+                say
+            };
             if !say.is_empty() {
                 return GuideReply {
                     status,
                     say,
+                    action: normalize_action(value.get("action")),
+                    confidence: parse_confidence(value.get("confidence")),
                     target: parse_target(value.get("target"), dims),
                 };
             }
@@ -682,6 +737,8 @@ fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
     GuideReply {
         status: "correct".to_string(),
         say: scrub_visible(cleaned),
+        action: "unknown".to_string(),
+        confidence: 0.0,
         target: None,
     }
 }
@@ -721,6 +778,8 @@ fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
                         .get("multi_step")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
+                    action: normalize_action(value.get("action")),
+                    confidence: parse_confidence(value.get("confidence")),
                     target: parse_target(value.get("target"), dims),
                 };
             }
@@ -733,6 +792,8 @@ fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
             answer: "I can see the screen, but I could not read a clear answer. Ask again in a few words.".into(),
             advice: String::new(),
             multi_step: false,
+            action: "unknown".into(),
+            confidence: 0.0,
             target: None,
         };
     }
@@ -740,7 +801,62 @@ fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
         answer: visible,
         advice: String::new(),
         multi_step: false,
+        action: "unknown".into(),
+        confidence: 0.0,
         target: None,
+    }
+}
+
+fn parse_confidence(value: Option<&serde_json::Value>) -> f64 {
+    value
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.55)
+        .clamp(0.0, 1.0)
+}
+
+/// Keep model-controlled actions inside the contract understood by the local
+/// Trust Layer. Unknown prose must never accidentally become a clickable step.
+fn normalize_action(value: Option<&serde_json::Value>) -> String {
+    match value
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("click") => "click",
+        Some("type") | Some("enter") | Some("write") => "type",
+        Some("select") | Some("choose") => "select",
+        Some("toggle") | Some("check") | Some("uncheck") => "toggle",
+        Some("submit") | Some("send") | Some("continue") => "submit",
+        Some("open") | Some("launch") => "open",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+/// Small local playbook hints improve consistency for common senior workflows
+/// without adding another model call or changing single-query mode's behavior.
+fn playbook_hint(task: &str) -> &'static str {
+    let lower = task.to_ascii_lowercase();
+    if lower.contains("email") || lower.contains("gmail") || lower.contains("outlook") {
+        "\nPlaybook: email tasks usually progress as choose recipient, write message, review, then send. Ask for one action at a time."
+    } else if lower.contains("benefit")
+        || lower.contains("government")
+        || lower.contains("portal")
+        || lower.contains("form")
+    {
+        "\nPlaybook: form tasks progress one field at a time. Never skip review before a final submit button."
+    } else if lower.contains("zoom")
+        || lower.contains("teams")
+        || lower.contains("meet")
+        || lower.contains("video call")
+    {
+        "\nPlaybook: video calls usually require checking the camera and microphone before joining. Never tell the user to hurry."
+    } else if lower.contains("upload") || lower.contains("attach") || lower.contains("file") {
+        "\nPlaybook: file tasks should identify the file picker, selected filename, and final upload confirmation separately."
+    } else if lower.contains("youtube") || lower.contains("browser") || lower.contains("website") {
+        "\nPlaybook: browser tasks should name the tab or address bar clearly and use one navigation action at a time."
+    } else {
+        ""
     }
 }
 
@@ -789,40 +905,37 @@ fn parse_target(
 }
 
 /// Remove `<think>...</think>` reasoning blocks that a model may have leaked
-/// into the visible content (Qwen/Gemma thinking modes do this). Case-insensitive,
-/// and an unclosed `<think>` swallows the rest so nothing raw reaches the glass
-/// or the spoken reply.
+/// into visible content. Iterate on UTF-8 character boundaries so a normal
+/// senior-friendly answer such as "Café" is never corrupted while filtering.
 fn strip_think(text: &str) -> String {
-    let lower = text.to_lowercase();
-    let bytes = text.as_bytes();
+    let lower = text.to_ascii_lowercase();
     let mut depth = 0usize;
     let mut out = String::with_capacity(text.len());
     let mut i = 0usize;
-    while i < bytes.len() {
+    while i < text.len() {
         let rest = &lower[i..];
         if let Some(tail) = rest.strip_prefix("<think") {
             depth += 1;
             i += "<think".len();
-            // Skip the rest of the opening tag if there is one.
             if let Some(gt) = tail.find('>') {
                 i += gt + 1;
             }
             continue;
         }
         if let Some(tail) = rest.strip_prefix("</think") {
-            if depth > 0 {
-                depth -= 1;
-            }
+            depth = depth.saturating_sub(1);
             i += "</think".len();
             if let Some(gt) = tail.find('>') {
                 i += gt + 1;
             }
             continue;
         }
+        let ch = text[i..].chars().next().expect("valid UTF-8 boundary");
+        let next = i + ch.len_utf8();
         if depth == 0 {
-            out.push(bytes[i] as char);
+            out.push(ch);
         }
-        i += 1;
+        i = next;
     }
     out.trim().to_string()
 }
@@ -961,7 +1074,13 @@ mod tests {
     #[ignore]
     fn end_to_end_timing() {
         let t0 = Instant::now();
-        let shot = crate::capture::capture_ask(None, 1280).expect("screen capture");
+        // Exercise the same selected-window path the guide uses, rather than
+        // measuring the slower full-monitor fallback.
+        #[cfg(windows)]
+        let window = crate::uia::foreground_window();
+        #[cfg(not(windows))]
+        let window = None;
+        let shot = crate::capture::capture_ask(window, 1280).expect("screen capture");
         println!(
             "[timing] capture+downscale+encode: {:?} ({}x{}, {} chars)",
             t0.elapsed(),
@@ -1086,5 +1205,46 @@ mod tests {
 
         let _ = child.kill();
         listener.stop();
+    }
+
+    #[test]
+    fn think_filter_preserves_unicode_and_hides_reasoning() {
+        assert_eq!(
+            strip_think("<think>ignore this</think>Click Café."),
+            "Click Café."
+        );
+        assert_eq!(strip_think("<think>unfinished reasoning"), "");
+    }
+
+    #[test]
+    fn invalid_actions_are_safe_unknown_values() {
+        let value = serde_json::json!("launch-the-moon");
+        assert_eq!(normalize_action(Some(&value)), "unknown");
+        let value = serde_json::json!("continue");
+        assert_eq!(normalize_action(Some(&value)), "submit");
+    }
+
+    #[test]
+    fn guide_parser_rejects_pointy_as_a_target() {
+        let reply = parse_guide(
+            r#"{"status":"next","say":"Click Continue.","action":"click","confidence":0.9,"target":{"label":"Pointy","x":0.1,"y":0.1}}"#,
+            Some((1000, 800)),
+        );
+        assert_eq!(reply.action, "click");
+        assert!(reply.target.is_none());
+    }
+
+    #[test]
+    fn guide_confirmation_prefix_is_removed() {
+        assert_eq!(
+            sanitize_guide_say("Nice, that's done — click Continue."),
+            "click Continue."
+        );
+        assert_eq!(
+            first_sentence_of_say(
+                r#"{"say":"Nice, that's done. Click Continue."}"#
+            ),
+            Some("Click Continue.".to_string())
+        );
     }
 }

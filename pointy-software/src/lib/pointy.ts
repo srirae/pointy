@@ -87,6 +87,8 @@ export interface NimReply {
   answer: string;
   advice: string;
   multi_step: boolean;
+  action: string;
+  confidence: number;
   target: ClickTarget | null;
 }
 
@@ -130,13 +132,23 @@ export interface GuideStep {
   kind: string;
   step: number;
   say: string;
+  action?: string;
+  confidence?: number;
   target: ClickTarget | null;
+  /** Exact physical point from the accessibility tree, when resolved. */
+  dot?: DotPoint | null;
   x: number;
   y: number;
   w: number;
   h: number;
   /** false when the sentence was already spoken via streaming. */
   speak?: boolean;
+}
+
+/** One local misclick warning: which wrong zone was entered and what was said. */
+export interface GuideWarn {
+  zone: string;
+  say: string;
 }
 
 /** Number of bars the backend analyses. Keep in sync with audio::BANDS. */
@@ -273,6 +285,8 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
         answer: "Preview mode — OpenRouter runs in the desktop app.",
         advice: "Hold your hotkey in the Tauri window.",
         multi_step: false,
+        action: "unknown",
+        confidence: 0,
         target: null,
         dot: null,
         x: 0,
@@ -290,6 +304,7 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "guide_stop":
     case "guide_repeat":
     case "speak":
+    case "stop_speaking":
       return undefined as T;
     case "guide_active":
       return false as T;
@@ -386,20 +401,38 @@ export const guideStart = (
   task: string,
   windowId?: number | null,
   firstLabel?: string | null,
+  action?: string | null,
+  confidence?: number | null,
 ) =>
   invoke<void>("guide_start", {
     task,
     windowId: windowId ?? null,
     firstLabel: firstLabel ?? null,
+    action: action ?? null,
+    confidence: confidence ?? null,
   });
 export const guideStop = () => invoke<void>("guide_stop");
 export const guideRepeat = () => invoke<void>("guide_repeat");
 export const guideActive = () => invoke<boolean>("guide_active");
 export const onGuideStep = (cb: (step: GuideStep) => void): Promise<UnlistenFn> =>
   listen<GuideStep>("guide://step", (event) => cb(event.payload));
+export interface GuideDiagnostic {
+  step: number;
+  phase: string;
+  reason: string;
+  action: string;
+  confidence: number;
+}
+
+export const onGuideWarn = (cb: (warn: GuideWarn) => void): Promise<UnlistenFn> =>
+  listen<GuideWarn>("guide://warn", (event) => cb(event.payload));
+export const onGuideDiagnostic = (
+  cb: (diagnostic: GuideDiagnostic) => void,
+): Promise<UnlistenFn> => listen<GuideDiagnostic>("guide://diagnostic", (event) => cb(event.payload));
 
 /** Speak text through the OS voice (used when the webview has no voices). */
 export const speakText = (text: string) => invoke<void>("speak", { text });
+export const stopSpeaking = () => invoke<void>("stop_speaking");
 
 // events
 export const onCaptureProgress = (cb: (update: CaptureUpdate) => void): Promise<UnlistenFn> =>

@@ -78,6 +78,7 @@ export function AskWindow({
   speakEnabled,
   onToggleSpeak,
   guideActive,
+  guidePhase,
   guideStep,
   onRepeatGuide,
   onStopGuide,
@@ -112,6 +113,7 @@ export function AskWindow({
   speakEnabled: boolean;
   onToggleSpeak: () => void;
   guideActive: boolean;
+  guidePhase: string;
   guideStep: GuideStep | null;
   onRepeatGuide: () => void;
   onStopGuide: () => void;
@@ -291,7 +293,7 @@ export function AskWindow({
               className="rounded-full px-2 py-0.5 text-[0.6875rem] font-bold"
               style={{ background: "rgba(13,74,71,0.12)", color: "#0d4a47" }}
             >
-              {guideActive ? "Guiding you" : "Done"}
+              {guideActive ? guidePhaseLabel(guidePhase) : "Done"}
             </span>
           </div>
           <p className="mt-1 text-[1.0625rem] font-semibold leading-snug text-[#2e3a47]">
@@ -516,6 +518,19 @@ function TurnBlock({
       </div>
     </motion.div>
   );
+}
+
+function guidePhaseLabel(phase: string) {
+  switch (phase) {
+    case "requesting_next":
+      return "Preparing next step";
+    case "recovery":
+      return "Still here with you";
+    case "completed":
+      return "Done";
+    default:
+      return "Guiding you";
+  }
 }
 
 function VoiceBars({ bands }: { bands: number[] }) {

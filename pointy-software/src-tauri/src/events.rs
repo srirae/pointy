@@ -189,10 +189,19 @@ mod imp {
     impl IUIAutomationStructureChangedEventHandler_Impl for StructureSink_Impl {
         fn HandleStructureChangedEvent(
             &self,
-            _sender: Ref<IUIAutomationElement>,
+            sender: Ref<IUIAutomationElement>,
             _changetype: StructureChangeType,
             _runtimeid: *const SAFEARRAY,
         ) -> windows::core::Result<()> {
+            // Showing/hiding Pointy's own webview can produce structure events.
+            // They are never user progress and must not advance a walkthrough.
+            if let Some(element) = sender.as_ref() {
+                if let Ok(pid) = unsafe { element.CurrentProcessId() } {
+                    if pid as u32 == std::process::id() {
+                        return Ok(());
+                    }
+                }
+            }
             let _ = self.tx.send(EventKind::StructureChanged);
             Ok(())
         }

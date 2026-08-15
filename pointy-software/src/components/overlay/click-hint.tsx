@@ -10,13 +10,18 @@ import type { ClickTarget } from "@/lib/pointy";
  * When `center` is given (the exact physical point resolved from the
  * accessibility tree), a solid dot marks that precise spot so the user knows
  * where to click, independent of the box outline.
+ *
+ * When `flash` is true (a misclick warning just fired), the dot brightens and
+ * pulses faster for a moment, drawing the eye back to the correct control.
  */
 export function ClickHint({
   target,
   center,
+  flash,
 }: {
   target: ClickTarget;
   center?: { x: number; y: number };
+  flash?: boolean;
 }) {
   const left = `${target.x * 100}%`;
   const top = `${target.y * 100}%`;
@@ -69,15 +74,22 @@ export function ClickHint({
           style={{
             left: `${center.x * 100}%`,
             top: `${center.y * 100}%`,
-            background: "#ffa61f",
-            border: "2px solid #ffffff",
-            boxShadow: "0 0 14px 4px rgba(255,166,31,0.9)",
+            background: flash ? "#ff5a1f" : "#ffa61f",
+            border: flash ? "3px solid #ffffff" : "2px solid #ffffff",
+            boxShadow: flash
+              ? "0 0 22px 8px rgba(255,90,31,0.95), 0 0 44px 14px rgba(255,166,31,0.7)"
+              : "0 0 14px 4px rgba(255,166,31,0.9)",
           }}
           initial={{ opacity: 0, scale: 0.6 }}
-          animate={{ opacity: 1, scale: [1, 1.25, 1] }}
+          animate={{
+            opacity: 1,
+            scale: flash ? [1, 1.6, 1, 1.6, 1] : [1, 1.25, 1],
+          }}
           transition={{
             opacity: { duration: 0.2 },
-            scale: { duration: 2.8, repeat: Infinity, ease: "easeInOut" },
+            scale: flash
+              ? { duration: 0.32, repeat: 4, ease: "easeInOut" }
+              : { duration: 2.8, repeat: Infinity, ease: "easeInOut" },
           }}
         />
       )}

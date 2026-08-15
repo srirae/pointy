@@ -17,6 +17,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# `pnpm tauri dev` uses Cargo's dev profile. Optimizing the image-pixel
+# conversion matters here: an unoptimized debug capture took ~3.8s on the
+# user's machine even when capturing only the selected window.
+[profile.dev]
+opt-level = 2
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

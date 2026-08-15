@@ -180,6 +180,16 @@ pub fn capture_ask(window_id: Option<u32>, max_edge: u32) -> Result<AskCapture, 
 }
 
 fn capture_region(window_id: Option<u32>) -> Result<(RgbaImage, f64, f64, f64, f64), String> {
+    // Prefer xcap's native window capture when a concrete app was selected.
+    // The previous path captured the entire monitor and then cropped it in
+    // Rust; that made the debug build spend seconds capturing pixels the model
+    // never receives. Window capture asks Windows for only the subject bounds.
+    if let Some(id) = window_id {
+        if let Some(cropped) = capture_window_direct(id) {
+            return Ok(cropped);
+        }
+    }
+
     // Capture the monitor the subject window actually sits on (not always the
     // primary), and report the crop's position as 0..1 fractions of the full
     // virtual desktop, so the overlay — which spans every monitor — can map a
@@ -223,6 +233,33 @@ fn capture_region(window_id: Option<u32>) -> Result<(RgbaImage, f64, f64, f64, f
         (mon_y + cy as f64 - vy as f64) / vh,
         cw as f64 / vw,
         ch as f64 / vh,
+    ))
+}
+
+/// Capture only the selected window and return its virtual-desktop fractions.
+/// Returns None when the window disappeared/minimized or the platform capture
+/// backend rejects the native window capture; the caller then uses the monitor
+/// fallback above.
+fn capture_window_direct(id: u32) -> Option<(RgbaImage, f64, f64, f64, f64)> {
+    let window = Window::all()
+        .ok()?
+        .into_iter()
+        .find(|window| window.id().ok() == Some(id))?;
+    let image = window.capture_image().ok()?;
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x = window.x().ok()?;
+    let y = window.y().ok()?;
+    let (vx, vy, vw, vh) = virtual_desktop_bounds();
+    Some((
+        image,
+        (x - vx) as f64 / (vw.max(1) as f64),
+        (y - vy) as f64 / (vh.max(1) as f64),
+        width as f64 / (vw.max(1) as f64),
+        height as f64 / (vh.max(1) as f64),
     ))
 }
 

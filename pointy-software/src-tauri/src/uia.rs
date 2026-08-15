@@ -19,7 +19,8 @@ use windows::Win32::UI::Accessibility::{
     IUIAutomationTogglePattern, TreeScope_Descendants, ToggleState_On,
     UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId,
     UIA_EditControlTypeId, UIA_HyperlinkControlTypeId, UIA_ListItemControlTypeId,
-    UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId, UIA_TabItemControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId, UIA_SliderControlTypeId,
+    UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId, UIA_TabItemControlTypeId,
     UIA_TogglePatternId, UIA_TreeItemControlTypeId,
 };
 
@@ -54,7 +55,6 @@ pub fn foreground_window() -> Option<u32> {
 #[cfg(windows)]
 #[derive(Debug, Clone, Default)]
 pub struct UiSnapshot {
-    pub title: String,
     pub toggled: Vec<String>,
     pub count: i32,
 }
@@ -62,7 +62,6 @@ pub struct UiSnapshot {
 #[cfg(not(windows))]
 #[derive(Debug, Clone, Default)]
 pub struct UiSnapshot {
-    pub title: String,
     pub toggled: Vec<String>,
     pub count: i32,
 }
@@ -92,12 +91,6 @@ fn snapshot_thread(window_id: u32) -> Option<UiSnapshot> {
         let root = automation
             .ElementFromHandle(HWND(window_id as *mut std::ffi::c_void))
             .ok()?;
-        let title = root
-            .CurrentName()
-            .ok()
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-
         let condition: IUIAutomationCondition = automation.CreateTrueCondition().ok()?;
         let elements = root.FindAll(TreeScope_Descendants, &condition).ok()?;
         let count = elements.Length().ok()?;
@@ -122,11 +115,7 @@ fn snapshot_thread(window_id: u32) -> Option<UiSnapshot> {
         if init.is_ok() {
             CoUninitialize();
         }
-        Some(UiSnapshot {
-            title,
-            toggled,
-            count,
-        })
+        Some(UiSnapshot { toggled, count })
     }
 }
 
@@ -156,6 +145,174 @@ pub struct DotPoint {
     /// point the overlay dot is drawn at).
     pub cx: f64,
     pub cy: f64,
+}
+
+/// One "confusion zone": a nearby interactive control someone might click by
+/// mistake instead of the target. Physical-pixel rect in virtual-screen
+/// coordinates, the same space `GetCursorPos` reports, plus the element's name
+/// for logging and (optionally) a spoken hint.
+#[derive(Debug, Clone, Serialize)]
+pub struct Zone {
+    pub label: String,
+    pub raw_x: i32,
+    pub raw_y: i32,
+    pub raw_w: i32,
+    pub raw_h: i32,
+}
+
+/// Collect the interactive elements a user could plausibly confuse for the
+/// target: everything clickable whose box lies within `radius_px` of the
+/// target's bounding box (the same toolbar/row, or near it). Never the whole
+/// screen, and never the target itself. Best-effort: an empty result just means
+/// the misclick watcher has nothing to guard.
+pub fn confusion_zones(
+    window_id: u32,
+    target: &DotPoint,
+    radius_px: i32,
+    limit: usize,
+) -> Vec<Zone> {
+    #[cfg(windows)]
+    {
+        let target = target.clone();
+        std::thread::Builder::new()
+            .name("pointy-uia-zones".into())
+            .spawn(move || zones_thread(window_id, &target, radius_px, limit))
+            .ok()
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window_id, target, radius_px, limit);
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn zones_thread(window_id: u32, target: &DotPoint, radius_px: i32, limit: usize) -> Vec<Zone> {
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let Ok(automation) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            return Vec::new();
+        };
+        let Ok(root) = automation.ElementFromHandle(HWND(window_id as *mut std::ffi::c_void)) else {
+            if init.is_ok() { CoUninitialize(); }
+            return Vec::new();
+        };
+        let Ok(condition) = automation.CreateTrueCondition() else {
+            if init.is_ok() { CoUninitialize(); }
+            return Vec::new();
+        };
+        let Ok(elements) = root.FindAll(TreeScope_Descendants, &condition) else {
+            if init.is_ok() { CoUninitialize(); }
+            return Vec::new();
+        };
+        let Ok(len) = elements.Length() else {
+            if init.is_ok() { CoUninitialize(); }
+            return Vec::new();
+        };
+
+        let (tx, ty) = (target.raw_x, target.raw_y);
+        let (tw, th) = (target.raw_w, target.raw_h);
+        let ex0 = tx - radius_px;
+        let ey0 = ty - radius_px;
+        let ex1 = tx + tw + radius_px;
+        let ey1 = ty + th + radius_px;
+
+        let mut zones: Vec<Zone> = Vec::new();
+        for i in 0..len.min(MAX_ELEMENTS) {
+            let Ok(element) = elements.GetElement(i) else { continue };
+            if !is_interactive(control_type(&element)) {
+                continue;
+            }
+            let Ok(name) = element.CurrentName() else { continue };
+            let name = name.to_string();
+            if name.trim().is_empty() {
+                continue;
+            }
+            let Ok(rect) = element.CurrentBoundingRectangle() else { continue };
+            let w = rect.right - rect.left;
+            let h = rect.bottom - rect.top;
+            if w <= 0 || h <= 0 {
+                continue;
+            }
+            // Skip the target itself (its own element, or one hugging the same box).
+            if rect_center_inside(rect, tx, ty, tw, th)
+                || overlap_area(rect, tx, ty, tw, th) as f64
+                    > 0.8 * (tw as f64).max(1.0) * (th as f64).max(1.0)
+            {
+                continue;
+            }
+            // Must sit within the confusion radius of the target box.
+            if rect.right < ex0 || rect.left > ex1 || rect.bottom < ey0 || rect.top > ey1 {
+                continue;
+            }
+            zones.push(Zone {
+                label: name.trim().to_string(),
+                raw_x: rect.left,
+                raw_y: rect.top,
+                raw_w: w,
+                raw_h: h,
+            });
+            if zones.len() >= limit {
+                break;
+            }
+        }
+
+        if init.is_ok() {
+            CoUninitialize();
+        }
+        zones
+    }
+}
+
+#[cfg(windows)]
+fn control_type(element: &IUIAutomationElement) -> i32 {
+    unsafe { element.CurrentControlType() }
+        .map(|c| c.0)
+        .unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn is_interactive(control_type: i32) -> bool {
+    const INTERACTIVE: [i32; 13] = [
+        UIA_ButtonControlTypeId.0,
+        UIA_CheckBoxControlTypeId.0,
+        UIA_ComboBoxControlTypeId.0,
+        UIA_EditControlTypeId.0,
+        UIA_HyperlinkControlTypeId.0,
+        UIA_ListItemControlTypeId.0,
+        UIA_MenuItemControlTypeId.0,
+        UIA_RadioButtonControlTypeId.0,
+        UIA_SliderControlTypeId.0,
+        UIA_SpinnerControlTypeId.0,
+        UIA_SplitButtonControlTypeId.0,
+        UIA_TabItemControlTypeId.0,
+        UIA_TreeItemControlTypeId.0,
+    ];
+    INTERACTIVE.contains(&control_type)
+}
+
+/// Whether the center of `rect` falls inside the target box.
+#[cfg(windows)]
+fn rect_center_inside(rect: RECT, tx: i32, ty: i32, tw: i32, th: i32) -> bool {
+    let cx = rect.left + (rect.right - rect.left) / 2;
+    let cy = rect.top + (rect.bottom - rect.top) / 2;
+    cx >= tx && cx < tx + tw && cy >= ty && cy < ty + th
+}
+
+/// Intersection area of `rect` and the target box.
+#[cfg(windows)]
+fn overlap_area(rect: RECT, tx: i32, ty: i32, tw: i32, th: i32) -> i64 {
+    let left = rect.left.max(tx);
+    let top = rect.top.max(ty);
+    let right = rect.right.min(tx + tw);
+    let bottom = rect.bottom.min(ty + th);
+    if right <= left || bottom <= top {
+        return 0;
+    }
+    (right - left) as i64 * (bottom - top) as i64
 }
 
 /// Resolve `target` against the real accessibility tree: return the refined
@@ -391,22 +548,7 @@ fn uia_thread(window_id: u32, label: &str) -> Option<RECT> {
 
 #[cfg(windows)]
 fn control_bonus(element: &IUIAutomationElement) -> f64 {
-    let Ok(control_type) = (unsafe { element.CurrentControlType() }) else {
-        return 1.0;
-    };
-    const INTERACTIVE: [i32; 10] = [
-        UIA_ButtonControlTypeId.0,
-        UIA_CheckBoxControlTypeId.0,
-        UIA_ComboBoxControlTypeId.0,
-        UIA_EditControlTypeId.0,
-        UIA_HyperlinkControlTypeId.0,
-        UIA_ListItemControlTypeId.0,
-        UIA_MenuItemControlTypeId.0,
-        UIA_RadioButtonControlTypeId.0,
-        UIA_TabItemControlTypeId.0,
-        UIA_TreeItemControlTypeId.0,
-    ];
-    if INTERACTIVE.contains(&control_type.0) {
+    if is_interactive(control_type(element)) {
         1.05
     } else {
         0.95
@@ -474,6 +616,35 @@ mod tests {
                 point.fy
             ),
             None => println!("DOT: no named element found in notepad's tree"),
+        }
+
+        let _ = child.kill();
+    }
+
+    /// Verify the confusion-zone gathering against a real window: open Notepad,
+    /// resolve its first named element, and list the nearby interactive controls
+    /// the misclick watcher would guard. Run with:
+    ///   cargo test confusion_zones_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn confusion_zones_smoke() {
+        let mut child = std::process::Command::new("notepad.exe")
+            .spawn()
+            .expect("spawn notepad");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+
+        let hwnd = crate::uia::foreground_window().expect("foreground window (notepad)");
+        let target = crate::uia::first_point(hwnd).expect("a named element in notepad");
+        let zones = crate::uia::confusion_zones(hwnd, &target, 240, 6);
+        println!(
+            "ZONES: target={:?} rect=({},{},{},{}) zones={}",
+            target.label, target.raw_x, target.raw_y, target.raw_w, target.raw_h, zones.len()
+        );
+        for zone in &zones {
+            println!(
+                "  zone={:?} rect=({},{},{},{})",
+                zone.label, zone.raw_x, zone.raw_y, zone.raw_w, zone.raw_h
+            );
         }
 
         let _ = child.kill();

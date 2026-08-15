@@ -18,10 +18,12 @@ mod guide;
 mod hotkey;
 mod keyboard;
 mod keys;
+mod misclick;
 mod nim;
 mod overlay;
 mod permissions;
 mod settings;
+mod task_state;
 mod tts;
 mod uia;
 mod usage;
@@ -215,6 +217,8 @@ struct AskReply {
     answer: String,
     advice: String,
     multi_step: bool,
+    action: String,
+    confidence: f64,
     target: Option<nim::ClickTarget>,
     /// Exact center of the resolved control, physical px + virtual-desktop
     /// fractions (see uia::DotPoint). Present when the accessibility tree
@@ -246,6 +250,8 @@ async fn ask_screen(
             answer: reply.answer,
             advice: reply.advice,
             multi_step: reply.multi_step,
+            action: reply.action,
+            confidence: reply.confidence,
             target,
             dot,
             x: shot.x,
@@ -357,12 +363,25 @@ fn guide_start(
     task: String,
     window_id: Option<u32>,
     first_label: Option<String>,
+    action: Option<String>,
+    confidence: Option<f64>,
 ) -> Result<(), String> {
     let task = task.trim().to_string();
     if task.is_empty() {
         return Err("Tell me what you need help with.".into());
     }
-    state.guide.start(app, task, window_id, first_label);
+    let label = first_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "I need a clear first control before starting guided mode.".to_string())?;
+    let confidence = confidence.unwrap_or(0.0).clamp(0.0, 1.0);
+    if confidence < 0.65 {
+        return Err("The first step is not clear enough to guide safely yet.".into());
+    }
+    state
+        .guide
+        .start(app, task, window_id, Some(label.to_string()), action, Some(confidence));
     Ok(())
 }
 
@@ -387,6 +406,11 @@ async fn speak(text: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || tts::speak(&text))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn stop_speaking() {
+    tts::stop_speaking();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -480,6 +504,7 @@ pub fn run() {
             guide_active,
             guide_repeat,
             speak,
+            stop_speaking,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
