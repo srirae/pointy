@@ -1,0 +1,437 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R 19 0 R] /Count 8 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 5093 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (1) Tj ET
+BT /F2 20 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 730.00 Tm (Pointy - Current State Report) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 699.00 Tm (Prepared: August 2026) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 686.00 Tm (Status: development snapshot; dev work paused at the user's request) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 659.00 Tm (1. Executive summary) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 644.00 m 564 644.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 626.00 Tm (Pointy is a Windows-first Tauri desktop assistant that answers questions about the user's current application,) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 613.00 Tm (speaks the answer, and points at a UI control. It also contains a guided walkthrough mode for multi-step tasks,) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 600.00 Tm (accessibility-based pointer refinement, local misclick prevention, usage tracking, and latency instrumentation.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 581.00 Tm (The central design rule is:) Tj ET
+BT /F2 10 Tf 0.42 0.28 0.08 rg 1 0 0 1 62.00 562.00 Tm (The AI suggests what to do. The operating system and local application state decide whether the user) Tj ET
+BT /F2 10 Tf 0.42 0.28 0.08 rg 1 0 0 1 62.00 547.00 Tm (actually did it.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 526.00 Tm (Pointy is not a continuous video agent. It does not stream screen frames while idle. A screenshot and model) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 513.00 Tm (request are made only after an explicit user query, or after a locally verified completion of an active guided) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 500.00 Tm (step.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 481.00 Tm (This document describes what is currently implemented in the checkout. It does not claim that every planned macOS,) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 468.00 Tm (wake-word, billing, or cloud product feature is complete.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 441.00 Tm (2. Current architecture) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 426.00 m 564 426.00 l S
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 403.00 Tm (Desktop shell) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 382.00 Tm (- Tauri 2 application.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 369.00 Tm (- Rust backend in `src-tauri`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 356.00 Tm (- React and TypeScript overlay/frontend in `src`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 343.00 Tm (- Webview overlay is transparent, always-on-top, and can be made mouse-event-transparent.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 330.00 Tm (- Rust owns OS access, screen capture, accessibility lookup, API calls, speech fallback, and local usage data.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 306.00 Tm (Main components) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 285.00 Tm (- `lib.rs`: Tauri commands and application state.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 272.00 Tm (- `nim.rs`: provider cascade, vision/text calls, streaming, STT, JSON parsing, model-output cleanup.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 259.00 Tm (- `capture.rs`: window/monitor enumeration and screenshot capture.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 246.00 Tm (- `overlay.rs`: full virtual-desktop overlay, capture conceal/show, click-through handling.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 233.00 Tm (- `uia.rs`: Windows UI Automation lookup, raw rectangles, pointer centers, snapshots, confusion zones.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 220.00 Tm (- `events.rs`: Windows UI Automation event subscriptions and debounce.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 207.00 Tm (- `guide.rs`: guided walkthrough loop and local completion gate.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 194.00 Tm (- `task_state.rs`: Trust Layer state machine and transition diagnostics.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 181.00 Tm (- `misclick.rs`: local cursor velocity/dwell safety watcher.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 168.00 Tm (- `tts.rs`: browser speech path plus Windows SAPI and cached warning audio.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 155.00 Tm (- `usage.rs`: local usage tracking and local usage questions.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 142.00 Tm (- `pointy.ts`, `overlay.tsx`, and overlay components: typed bridge and user interface.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 115.00 Tm (3. Single-question flow) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 100.00 m 564 100.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 82.00 Tm (1. The user wakes Pointy with the configured hotkey and chooses a target application window.) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 5493 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (2) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 730.00 Tm (2. The user speaks or types a question.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 717.00 Tm (3. The overlay is concealed for capture. The selected window is focused.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 704.00 Tm (4. Rust captures the selected window directly when possible. It falls back to monitor capture and crop if direct) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 691.00 Tm (capture is unavailable.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 678.00 Tm (5. The image is downscaled to a maximum long edge of 1280 pixels and encoded as JPEG.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 665.00 Tm (6. Rust sends the question and screenshot to the first available provider in the configured cascade.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 652.00 Tm (7. The model returns JSON containing an answer, optional advice, action, confidence, and an approximate target) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 639.00 Tm (box.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 626.00 Tm (8. When a target label is available, Windows UI Automation searches the selected window for the real control.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 613.00 Tm (9. The model box is replaced with the accessibility rectangle when a match is found.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 600.00 Tm (10. The frontend displays the answer and can show a high-contrast animated box and center dot.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 587.00 Tm (11. The answer is spoken through Web Speech in the webview, with Windows SAPI as fallback when no browser voice is) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 574.00 Tm (available.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 555.00 Tm (Single-query mode does not start the guided loop unless the response is explicitly multi-step and is safe to) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 542.00 Tm (verify locally.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 515.00 Tm (4. Guided walkthrough logic) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 500.00 m 564 500.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 482.00 Tm (Guided mode is started only when all of the following are true:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 463.00 Tm (- the model marks the task as multi-step;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 450.00 Tm (- the first target exists;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 437.00 Tm (- the target has a real accessibility dot;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 424.00 Tm (- model confidence is at least 0.65;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 411.00 Tm (- the action is one of click, type, select, toggle, submit, or open.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 392.00 Tm (The first instruction is shown immediately from the single-question response. The backend then creates a local) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 379.00 Tm (step contract containing:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 360.00 Tm (- step number;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 347.00 Tm (- action type;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 334.00 Tm (- target label;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 321.00 Tm (- confidence;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 308.00 Tm (- current Trust Layer phase.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 284.00 Tm (Trust Layer phases) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 263.00 Tm (- `waiting_for_action`: the user is being shown one instruction.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 250.00 Tm (- `requesting_next`: a local completion signal was accepted and the next model call may begin.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 237.00 Tm (- `recovery`: a long period of waiting produced a gentle check-in.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 224.00 Tm (- `completed`: the model reported the task is complete.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 211.00 Tm (- `stopped`: the guide is no longer active.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 187.00 Tm (Completion gates) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 166.00 Tm (A generic focus change is never enough. A generic accessibility redraw is never enough.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 147.00 Tm (The strongest path is a local mouse-button edge whose physical cursor position is inside the raw accessibility) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 134.00 Tm (rectangle of the highlighted target. That signal is handled immediately, so Pointy does not wait for a browser) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 121.00 Tm (redraw or structure event that may never arrive.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 102.00 Tm (A secondary path handles a newly opened window or dialog. It takes an accessibility snapshot only after the event) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 89.00 Tm (and accepts it only when the tree shows a meaningful change, such as a toggle change or a large structural change.) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 5108 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (3) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 730.00 Tm (Only after one of these gates succeeds does Pointy capture a new screenshot and request the next instruction.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 706.00 Tm (Check-ins and stopping) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 685.00 Tm (The guide waits patiently for up to 50 seconds before speaking a check-in. This is not a hard timeout. It) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 672.00 Tm (continues waiting afterward. Stop is checked in short slices, and in-flight results are discarded after Stop so) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 659.00 Tm (late events cannot re-open or speak the guide.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 632.00 Tm (5. Windows accessibility event system) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 617.00 m 564 617.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 599.00 Tm (`events.rs` creates a dedicated COM STA thread and message loop. It registers:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 580.00 Tm (- `UIA_AutomationFocusChangedEventId`;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 567.00 Tm (- `UIA_StructureChangedEventId`;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 554.00 Tm (- `UIA_Window_WindowOpenedEventId`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 535.00 Tm (Events are debounced in a 250 millisecond window. A burst of internal redraw events is collapsed into one) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 522.00 Tm (callback. Each debounced event is logged as an `EVENT:` line. Pointy's own process ID is filtered so overlay) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 509.00 Tm (hide/show operations do not look like user progress.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 490.00 Tm (Idle behavior is intentionally quiet: event listeners remain registered, but no screenshot and no AI call occurs) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 477.00 Tm (while the guide is waiting.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 458.00 Tm (The current implementation is Windows-tested. macOS Accessibility observer work is not fully implemented or) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 445.00 Tm (verified in this checkout.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 418.00 Tm (6. Pointer positioning algorithm) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 403.00 m 564 403.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 385.00 Tm (The model is used to name a likely control. UI Automation is used to locate the actual control.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 366.00 Tm (For the raw accessibility rectangle:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 344.00 Tm (raw rectangle = \(x, y, width, height\)) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 333.00 Tm (dot_x = x + width / 2) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 322.00 Tm (dot_y = y + height / 2) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 302.00 Tm (The rectangle and center are kept in physical virtual-desktop pixels. The code also computes fractions of the) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 289.00 Tm (complete virtual desktop for frontend rendering.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 270.00 Tm (The overlay window is placed at the virtual desktop origin and sized to the union of all monitors. This supports:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 251.00 Tm (- a monitor to the left of the primary monitor;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 238.00 Tm (- negative virtual-screen coordinates;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 225.00 Tm (- multiple monitors;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 212.00 Tm (- high-DPI displays.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 193.00 Tm (The code logs the raw rectangle, DPI scale, computed center, and overlay origin with a `POSITION:` line. The) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 180.00 Tm (overlay is set to ignore cursor events except over the Pointy card, so the pointer layer does not block the real) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 167.00 Tm (application click.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 148.00 Tm (On Windows, UI Automation coordinates are consumed in the same physical screen coordinate space as `GetCursorPos`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 135.00 Tm (The macOS Y-flip requirement is not yet implemented because the macOS observer path is not complete.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 108.00 Tm (7. Local misclick prevention) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 93.00 m 564 93.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 75.00 Tm (Misclick prevention runs only while a guided step with a resolved target is active. It does not run while Pointy) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 12 0 R >>
+endobj
+12 0 obj
+<< /Length 4831 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (4) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 730.00 Tm (is idle and it does not call a model or network service.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 706.00 Tm (Setup) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 685.00 Tm (1. UI Automation walks the selected window's descendants.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 672.00 Tm (2. Only interactive controls are considered: buttons, checkboxes, links, tabs, list items, sliders, edits, menu) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 659.00 Tm (items, and similar controls.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 646.00 Tm (3. Controls outside a 240-pixel confusion radius are ignored.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 633.00 Tm (4. The target itself and heavy-overlap matches are excluded.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 620.00 Tm (5. At most six nearby zones are retained.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 596.00 Tm (Reactive decision) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 575.00 Tm (The watcher samples the OS cursor approximately every 8 milliseconds. For each zone it tracks:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 556.00 Tm (- whether the cursor is inside;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 543.00 Tm (- continuous dwell duration;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 530.00 Tm (- approach speed;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 517.00 Tm (- current speed;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 504.00 Tm (- cooldown state.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 485.00 Tm (A warning fires only when:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 466.00 Tm (- the cursor newly entered the wrong zone;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 453.00 Tm (- dwell is at least 200 milliseconds;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 440.00 Tm (- current speed has fallen below 45 percent of approach speed, or both speeds are very low.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 421.00 Tm (A fast pass-through or brief grazing movement does not warn. Moving onto the correct target cancels pending) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 408.00 Tm (warnings. A zone has a 2.5 second cooldown and lingering does not repeatedly fire.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 389.00 Tm (The warning is a pre-cached WAV generated once through Windows SAPI and played asynchronously with `PlaySoundW`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 376.00 Tm (The reactive path does not create a process, call TTS live, call AI, or use the network. It emits `guide://warn`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 363.00 Tm (so the correct dot can briefly brighten.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 344.00 Tm (Verification logs use this shape:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 322.00 Tm (MISCLICK: zone=... dwell_ms=... approach_px_s=... current_px_s=... velocity_drop=... trigger_to_audio_ms=...) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 294.00 Tm (8. Latency pipeline) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 279.00 m 564 279.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 261.00 Tm (The guided cycle records these timestamps:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 242.00 Tm (- `T0`: local completion event accepted;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 229.00 Tm (- `T1`: screenshot captured;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 216.00 Tm (- `T2`: streaming request sent;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 203.00 Tm (- `T3`: first model content token received;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 190.00 Tm (- `T4`: full response received;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 177.00 Tm (- `T5`: target dot resolved and emitted;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 164.00 Tm (- `T6`: first sentence begins speaking.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 145.00 Tm (The log format is:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 123.00 Tm (LATENCY: T0=... T1=... T2=... T3=... T4=... T5=... T6=... | event_to_screenshot=...ms screenshot_to_request=...ms |) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 112.00 Tm (request_to_first_token=...ms generation_time=...ms | total=...ms) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 92.00 Tm (The active path uses:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 73.00 Tm (- direct selected-window capture when supported;) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 14 0 R >>
+endobj
+14 0 obj
+<< /Length 5355 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (5) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 730.00 Tm (- JPEG downscaling before the API request;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 717.00 Tm (- one shared blocking `reqwest` client with connection pooling;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 704.00 Tm (- SSE streaming for guided responses;) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 691.00 Tm (- first complete sentence speech before the full model response finishes.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 672.00 Tm (Previously recorded development numbers were approximately 188 milliseconds for capture/downscale/encode and) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 659.00 Tm (approximately 1.5 seconds for a model round trip. These are historical measurements, not a guarantee:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 646.00 Tm (free-provider rate limits and network conditions can add seconds.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 619.00 Tm (9. AI and speech APIs) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 604.00 m 564 604.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 586.00 Tm (All provider keys are loaded by Rust from environment variables or local `.env` files. They are intentionally) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 573.00 Tm (unprefixed. Do not use `VITE_` prefixes because Vite would expose those values to the webview bundle.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 549.00 Tm (Vision and text cascade) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 528.00 Tm (Providers are tried in this order when a usable key exists:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 509.00 Tm (1. Groq) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 496.00 Tm (- Endpoint: `https://api.groq.com/openai/v1/chat/completions`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 483.00 Tm (- Key: `GROQ_API_KEY`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 470.00 Tm (- Vision model: `qwen/qwen3.6-27b`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 457.00 Tm (- Text model: `llama-3.3-70b-versatile`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 444.00 Tm (- Requests disable reasoning where supported to reduce leaked thinking and latency.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 425.00 Tm (2. Google Gemini) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 412.00 Tm (- Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 399.00 Tm (- Keys: `GEMINI_API_KEY` or `GOOGLE_API_KEY`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 386.00 Tm (- Models: `gemini-3.6-flash`, with `gemini-3.5-flash-lite` as a text fallback.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 367.00 Tm (3. OpenRouter) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 354.00 Tm (- Endpoint: `https://openrouter.ai/api/v1/chat/completions`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 341.00 Tm (- Keys: `OPEN_ROUTER_API_KEY` or `OPENROUTER_API_KEY`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 328.00 Tm (- Free vision models: `google/gemma-4-26b-a4b-it:free`, `google/gemma-4-31b-it:free`, and) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 315.00 Tm (`nvidia/nemotron-nano-12b-v2-vl:free`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 302.00 Tm (- Free text model: `google/gemma-4-26b-a4b-it:free`.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 283.00 Tm (The OpenRouter Gemma model requested earlier is still present. OpenRouter is not the only configured provider:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 270.00 Tm (Groq and Gemini are attempted first when their keys exist. A provider that returns a rate limit, server error, or) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 257.00 Tm (connection failure is placed in an 8-second cooldown to avoid hammering it.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 233.00 Tm (Speech-to-text) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 212.00 Tm (Speech transcription uses OpenAI-compatible multipart audio endpoints:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 193.00 Tm (1. Groq Whisper:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 180.00 Tm (- `https://api.groq.com/openai/v1/audio/transcriptions`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 167.00 Tm (- `whisper-large-v3-turbo`, then `whisper-large-v3`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 154.00 Tm (- key: `GROQ_API_KEY`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 135.00 Tm (2. NVIDIA fallback:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 122.00 Tm (- `https://integrate.api.nvidia.com/v1/audio/transcriptions`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 109.00 Tm (- `openai/whisper-large-v3`, `nvidia/whisper-large-v3`, and `nvidia/parakeet-tdt-0.6b-v2`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 96.00 Tm (- keys: `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY`) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 77.00 Tm (NVIDIA Whisper was retained as requested; it is a fallback, not the primary STT route.) Tj ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 16 0 R >>
+endobj
+16 0 obj
+<< /Length 4932 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (6) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 730.00 Tm (Text-to-speech) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 709.00 Tm (- Primary: browser Web Speech API in the WebView.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 696.00 Tm (- Windows fallback: PowerShell `System.Speech.Synthesis.SpeechSynthesizer` through SAPI.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 683.00 Tm (- Misclick warning: pre-generated WAV plus Windows `PlaySoundW`, not live API speech.) Tj ET
+BT /F2 11.5 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 659.00 Tm (Local APIs and data) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 638.00 Tm (- Windows UI Automation: element names, bounds, control types, events, and tree snapshots.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 625.00 Tm (- xcap: monitor/window enumeration and screenshots.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 612.00 Tm (- Local usage tracker: answers time-spent questions without an AI call.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 599.00 Tm (- Tauri IPC: typed TypeScript-to-Rust command bridge.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 572.00 Tm (10. Environment configuration) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 557.00 m 564 557.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 539.00 Tm (Current variable names are:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 517.00 Tm (GROQ_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 506.00 Tm (GEMINI_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 495.00 Tm (GOOGLE_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 484.00 Tm (OPEN_ROUTER_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 473.00 Tm (OPENROUTER_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 462.00 Tm (NVIDIA_API_KEY=) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 451.00 Tm (NVIDIA_NIM_API_KEY=) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 431.00 Tm (Only put real values in `.env.local` or another ignored local environment file. The report intentionally does not) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 418.00 Tm (include any secret values. Restart Pointy after changing the file because the Rust process reads the configuration) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 405.00 Tm (at runtime.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 378.00 Tm (11. Privacy and security behavior) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 363.00 m 564 363.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 345.00 Tm (- No screenshot capture while idle.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 332.00 Tm (- No continuous video/frame streaming.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 319.00 Tm (- A screenshot is taken when the user asks a question and after a locally verified guided completion.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 306.00 Tm (- The screenshot is cropped to the selected window when direct capture is available.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 293.00 Tm (- API keys stay in the Rust process and are not sent to the webview.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 280.00 Tm (- Usage questions are answered locally.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 267.00 Tm (- Model output is parsed and scrubbed before display or speech.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 254.00 Tm (- The application should still publish a formal retention policy before release. The current implementation does) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 241.00 Tm (not constitute a complete security audit.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 214.00 Tm (12. Current UI behavior) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 199.00 m 564 199.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 181.00 Tm (- App/window picker before asking.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 168.00 Tm (- Voice or typed question input.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 155.00 Tm (- Answer history with retry, copy, edit, and point controls.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 142.00 Tm (- High-contrast target border, center dot, slow glow, and warning flash.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 129.00 Tm (- Guided banner with one instruction at a time.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 116.00 Tm (- Repeat that and Stop controls.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 103.00 Tm (- No call-a-person panel.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 90.00 Tm (- Speech mute/unmute control.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 77.00 Tm (- Trust phase shown as a compact status label.) Tj ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 18 0 R >>
+endobj
+18 0 obj
+<< /Length 4902 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (7) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 730.00 Tm (- Diagnostics are available through `guide://diagnostic` and Rust `TRUST:` logs.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 703.00 Tm (13. Known limitations and honest status) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 688.00 m 564 688.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 670.00 Tm (- Windows is the verified platform. macOS Accessibility observer registration and coordinate Y-flipping are not) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 657.00 Tm (complete.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 644.00 Tm (- Accessibility quality depends on the target application exposing a useful UI Automation tree. When no element) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 631.00 Tm (can be resolved, Pointy cannot safely start guided mode.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 618.00 Tm (- The optional AI-suggested extra confusion zones are not implemented; current zones are geometric and) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 605.00 Tm (accessibility-tree based.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 592.00 Tm (- Free providers can return 429 responses, decommission models, or have network delays. The fallback cascade) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 579.00 Tm (reduces but cannot eliminate that dependency.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 566.00 Tm (- There is no local offline vision model in the current build.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 553.00 Tm (- There is no billing, account system, wake-word engine, or full release installer workflow in the current) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 540.00 Tm (implementation.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 527.00 Tm (- The ignored live smoke tests require a real desktop window and live provider keys. Unit tests do not prove) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 514.00 Tm (provider availability.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 501.00 Tm (- A perfect experience cannot be guaranteed by the current free API setup; provider quotas and external model) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 488.00 Tm (behavior remain outside Pointy's control.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 461.00 Tm (14. Verification snapshot) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 446.00 m 564 446.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 428.00 Tm (The latest local verification completed before this report:) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 409.00 Tm (- Rust debug check: passed.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 396.00 Tm (- Rust library tests: 34 passed, 6 intentionally ignored.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 383.00 Tm (- Rust release check: passed.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 370.00 Tm (- Rust release library tests: 34 passed, 6 intentionally ignored.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 357.00 Tm (- TypeScript check: passed.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 344.00 Tm (- Production frontend build: passed.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 331.00 Tm (- No dev server was started for this report.) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 56.00 318.00 Tm (- No API key values are included in this report.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 291.00 Tm (15. Useful commands after development resumes) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 276.00 m 564 276.00 l S
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 258.00 Tm (From `pointy-software`:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 236.00 Tm (pnpm run check) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 225.00 Tm (pnpm run build) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 214.00 Tm (pnpm tauri dev) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 194.00 Tm (From `pointy-software/src-tauri`:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 172.00 Tm (cargo check) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 161.00 Tm (cargo test --lib) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 150.00 Tm (cargo check --release) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 139.00 Tm (cargo test --lib --release) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 119.00 Tm (Ignored live tests are intentionally separate because they open windows, capture the screen, use live providers,) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 106.00 Tm (and may consume quota.) Tj ET
+BT /F2 15 Tf 0.05 0.29 0.32 rg 1 0 0 1 48.00 79.00 Tm (16. Bottom line) Tj ET
+0.86 0.89 0.91 RG 0.6 w 48 64.00 m 564 64.00 l S
+endstream
+endobj
+19 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 20 0 R >>
+endobj
+20 0 obj
+<< /Length 1580 >>
+stream
+q 0.05 0.29 0.32 rg 0 760 612 32 re f Q
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 48.00 772.00 Tm (POINTY  /  CURRENT STATE) Tj ET
+BT /F2 8 Tf 1 1 1 rg 1 0 0 1 550.00 772.00 Tm (8) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 730.00 Tm (Pointy currently has a strong local control loop around an imperfect cloud vision suggestion:) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 708.00 Tm (explicit question) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 697.00 Tm (-> selected-window screenshot) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 686.00 Tm (-> free-provider vision model) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 675.00 Tm (-> structured answer and approximate label) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 664.00 Tm (-> Windows UI Automation refinement) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 653.00 Tm (-> physical center dot) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 642.00 Tm (-> local verification for guided progress) Tj ET
+BT /F1 8.1 Tf 0.20 0.25 0.29 rg 1 0 0 1 62.00 631.00 Tm (-> next screenshot/model call only after verified progress) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 611.00 Tm (The most important quality property is now explicit: Pointy should not silently assume that a user completed a) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 598.00 Tm (step. The remaining work should focus on real desktop testing, provider reliability, and platform coverage rather) Tj ET
+BT /F1 9.2 Tf 0.12 0.18 0.23 rg 1 0 0 1 48.00 585.00 Tm (than adding more speculative features.) Tj ET
+endstream
+endobj
+xref
+0 21
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000168 00000 n 
+0000000265 00000 n 
+0000000367 00000 n 
+0000000503 00000 n 
+0000005648 00000 n 
+0000005784 00000 n 
+0000011329 00000 n 
+0000011466 00000 n 
+0000016627 00000 n 
+0000016765 00000 n 
+0000021649 00000 n 
+0000021787 00000 n 
+0000027195 00000 n 
+0000027333 00000 n 
+0000032318 00000 n 
+0000032456 00000 n 
+0000037411 00000 n 
+0000037549 00000 n 
+trailer
+<< /Size 21 /Root 1 0 R >>
+startxref
+39182
+%%EOF

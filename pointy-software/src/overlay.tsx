@@ -142,24 +142,11 @@ export function Overlay() {
     return () => window.clearTimeout(timer);
   }, [copiedTurn]);
 
-  // Warm the webview's voices early; on WebView2 they load asynchronously and
-  // an empty voice list would otherwise make the first answer go unspoken.
-  useEffect(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.getVoices();
-    }
-  }, []);
-
-  // Speak with the webview voice when it has any; otherwise fall back to the
-  // OS SAPI voice (Rust) so answers are always read aloud.
+  // All user-facing speech uses the local Piper-first Rust path. Keeping this
+  // out of Web Speech avoids browser-dependent voices and duplicate playback.
   const speakAloud = useCallback((text: string) => {
-    if (typeof window === "undefined" || !text.trim()) return;
-    if ("speechSynthesis" in window && window.speechSynthesis.getVoices().length > 0) {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-    } else {
-      void speakText(text);
-    }
+    if (!text.trim()) return;
+    void speakText(text);
   }, []);
 
   // Speak finished answers out loud. Newly-done turns only.
@@ -184,13 +171,16 @@ export function Overlay() {
       // the sentence so the already-correct dot never disappears mid-request.
       if (step.kind === "speech") {
         setGuideStep((current) =>
-          current ? { ...current, say: step.say, speak: true } : step,
+          current ? { ...current, say: step.say, speak: false } : step,
         );
       } else {
         setGuideStep(step);
       }
       setGuideWarn(null);
-      if (step.kind === "done") setGuide((g) => ({ ...g, active: false }));
+      if (step.kind === "done") {
+        setGuide((g) => ({ ...g, active: false }));
+        void guideStop();
+      }
     }).then((off) => {
       if (cancelled) off();
       else unlisten = off;
@@ -266,7 +256,6 @@ export function Overlay() {
   const resetSession = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
-    window.speechSynthesis?.cancel();
     void stopSpeaking();
     spokenIds.current.clear();
     guideStoppedRef.current = true;
@@ -468,7 +457,6 @@ export function Overlay() {
   const stopGuide = useCallback(() => {
     guideStoppedRef.current = true;
     void guideStop();
-    window.speechSynthesis?.cancel();
     void stopSpeaking();
     setGuide((g) => ({ ...g, active: false }));
     setGuideStep(null);

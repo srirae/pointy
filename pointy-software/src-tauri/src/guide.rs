@@ -262,6 +262,14 @@ fn spawn(
                     if !cb_active.load(Ordering::SeqCst) {
                         return;
                     }
+                    // Synthesize the first complete sentence locally while the
+                    // model is still streaming. `speak` returns once Piper has
+                    // queued audio, so T6 measures actual audio start rather
+                    // than merely the arrival of a text token.
+                    let _ = crate::tts::speak(sentence);
+                    if !cb_active.load(Ordering::SeqCst) {
+                        return;
+                    }
                     spoke_first.store(true, Ordering::SeqCst);
                     *cb_t6.lock().unwrap() = Some(crate::events::now_millis());
                     let event = GuideStep {
@@ -276,7 +284,8 @@ fn spawn(
                         y: sy,
                         w: sw,
                         h: sh,
-                        speak: true,
+                        // Piper already spoke this streaming sentence.
+                        speak: false,
                     };
                     *stream_last.lock().unwrap() = Some(event.clone());
                     let _ = stream_app.emit("guide://step", event);
@@ -317,7 +326,7 @@ fn spawn(
                         active.store(false, Ordering::SeqCst);
                         let t5 = crate::events::now_millis();
                         let t6 = t6_ms.lock().unwrap().unwrap_or(t5);
-                        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6);
+                        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6, timings.provider);
                         break;
                     }
                     Ok((reply, timings)) => {
@@ -347,7 +356,7 @@ fn spawn(
                         *last_event.lock().unwrap() = Some(event.clone());
                         let _ = app.emit("guide://step", event);
                         let t6 = t6_ms.lock().unwrap().unwrap_or(t5);
-                        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6);
+                        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6, timings.provider);
                     }
                     Err(_) => {
                         let event = GuideStep {

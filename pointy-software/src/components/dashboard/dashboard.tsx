@@ -10,7 +10,13 @@ import { PointyMark } from "@/components/pointy-mark";
 import { Button } from "@/components/ui/button";
 import { useHotkeyCapture, useHotkeyPress } from "@/hooks/use-hotkey";
 import { useMicLevels } from "@/hooks/use-mic-levels";
-import { overlaySetEnabled, overlayWake, overlayRest, registerAndSaveHotkey, type Combo } from "@/lib/pointy";
+import {
+  overlaySetEnabled,
+  overlayWake,
+  overlayRest,
+  registerAndSaveHotkey,
+  type Combo,
+} from "@/lib/pointy";
 
 const HEARD_LEVEL = 0.08;
 

@@ -82,9 +82,18 @@ pub fn now_millis() -> u128 {
 /// Emit the single-line end-to-end latency report. All timestamps are epoch
 /// milliseconds. `total` is event → TTS start, the time the user actually waits
 /// before hearing the first instruction.
-pub fn log_latency(t0: u128, t1: u128, t2: u128, t3: u128, t4: u128, t5: u128, t6: u128) {
+pub fn log_latency(
+    t0: u128,
+    t1: u128,
+    t2: u128,
+    t3: u128,
+    t4: u128,
+    t5: u128,
+    t6: u128,
+    provider: &str,
+) {
     eprintln!(
-        "LATENCY: T0={t0} T1={t1} T2={t2} T3={t3} T4={t4} T5={t5} T6={t6} \
+        "LATENCY: provider={provider} T0={t0} T1={t1} T2={t2} T3={t3} T4={t4} T5={t5} T6={t6} \
          | event_to_screenshot={}ms screenshot_to_request={}ms \
          | request_to_first_token={}ms generation_time={}ms | total={}ms",
         t1.saturating_sub(t0),

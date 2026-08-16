@@ -3,8 +3,7 @@
 //! This pass covers the onboarding pipeline plumbing only, but each piece is the real
 //! foundation the later phases build on:
 //!
-//! * `audio`       — live mic capture and band levels. Phase 3's wake-word listener
-//!                   reads the same frames.
+//! * `audio`       — live mic capture and band levels for the input visualiser.
 //! * `hotkey`      — one global keyboard hook, used both to record a combo and to emit
 //!                   the push-to-talk down/up edges Phase 1 activation needs.
 //! * `overlay`     — the push-to-talk pill window, shown on the hotkey down edge.
@@ -19,6 +18,7 @@ mod hotkey;
 mod keyboard;
 mod keys;
 mod misclick;
+mod models;
 mod nim;
 mod overlay;
 mod permissions;
@@ -163,6 +163,16 @@ fn settings_finish_onboarding(app: AppHandle) -> Result<Settings, String> {
     let settings = settings::update(&app, |settings| settings.onboarding_complete = true)?;
     overlay::set_enabled(&app, true);
     Ok(settings)
+}
+
+#[tauri::command]
+fn models_status() -> Vec<(String, bool)> {
+    models::status()
+}
+
+#[tauri::command]
+fn models_ready() -> bool {
+    models::ready()
 }
 
 #[tauri::command]
@@ -452,6 +462,8 @@ pub fn run() {
             };
 
             let stored = settings::load(&handle);
+            let _ = models::configure(&handle);
+            models::ensure_release_assets(&handle);
 
             // A hotkey recorded in a previous run is live from launch.
             if let Some(combo) = stored.hotkey.clone() {
@@ -484,6 +496,8 @@ pub fn run() {
             settings_get,
             settings_finish_onboarding,
             settings_reset,
+            models_status,
+            models_ready,
             overlay_set_enabled,
             overlay_hide,
             overlay_wake,

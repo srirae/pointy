@@ -16,7 +16,10 @@ import {
   settingsFinishOnboarding,
   settingsGet,
   settingsReset,
+  onModelProgress,
+  modelsReady,
   type Combo,
+  type ModelProgress,
 } from "@/lib/pointy";
 import {
   loadPersisted,
@@ -30,10 +33,33 @@ type View = { kind: "loading" } | { kind: "onboarding"; step: StepId } | { kind:
 export default function App() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [combo, setCombo] = useState<Combo | null>(null);
+  const [models, setModels] = useState<ModelProgress | null>(null);
+
+  useEffect(() => {
+    let off: (() => void) | null = null;
+    let cancelled = false;
+    void onModelProgress((progress) => setModels(progress)).then((unlisten) => {
+      if (cancelled) unlisten();
+      else off = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
       try {
+        const waitForModels = async () => {
+          // Dev mode reports ready immediately and relies on postinstall. Release
+          // mode waits for the app-data bootstrap so the first-run progress view
+          // remains visible until the local voice assets are usable.
+          while (!(await modelsReady())) {
+            await new Promise((resolve) => window.setTimeout(resolve, 250));
+          }
+        };
+        await waitForModels();
         const persisted = await loadPersisted();
         const settings = await settingsGet().catch(() => null);
         const keys = persisted.customHotkey ?? settings?.hotkey?.keys ?? null;
@@ -91,7 +117,15 @@ export default function App() {
     return (
       <div className="relative flex h-full items-center justify-center">
         <Atmosphere />
-        <Loader2 className="relative z-10 size-5 animate-spin text-muted-foreground" />
+        <div className="relative z-10 flex flex-col items-center gap-3 text-center">
+          <Loader2 className="mx-auto size-5 animate-spin text-muted-foreground" />
+          {models && models.phase !== "complete" && (
+            <p className="max-w-xs text-sm text-muted-foreground">
+              Preparing Pointy’s local voice and microphone models{models.asset ? ` — ${models.asset}` : ""}…
+            </p>
+          )}
+          {models?.error && <p className="max-w-sm text-xs text-destructive">{models.error}</p>}
+        </div>
       </div>
     );
   }

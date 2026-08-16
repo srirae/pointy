@@ -52,6 +52,15 @@ export interface WakeSession {
   transcript: string;
 }
 
+export interface ModelProgress {
+  phase: string;
+  asset: string;
+  downloaded: number;
+  total: number | null;
+  ready: boolean;
+  error: string | null;
+}
+
 export interface Settings {
   hotkey: Combo | null;
   input_device: string | null;
@@ -250,6 +259,10 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "settings_finish_onboarding":
       preview.settings.onboarding_complete = true;
       return { ...preview.settings } as T;
+    case "models_status":
+      return [] as T;
+    case "models_ready":
+      return true as T;
     case "settings_reset":
       preview.settings = {
         hotkey: null,
@@ -365,6 +378,8 @@ export async function registerAndSaveHotkey(keys: string[]): Promise<Combo> {
 export const settingsGet = () => invoke<Settings>("settings_get");
 export const settingsFinishOnboarding = () => invoke<Settings>("settings_finish_onboarding");
 export const settingsReset = () => invoke<Settings>("settings_reset");
+export const modelsStatus = () => invoke<[string, boolean][]>("models_status");
+export const modelsReady = () => invoke<boolean>("models_ready");
 export const hotkeyClear = () => invoke<void>("hotkey_clear");
 
 // overlay
@@ -451,5 +466,7 @@ export const onMicLevel = (cb: (level: MicLevel) => void): Promise<UnlistenFn> =
   listen<MicLevel>("mic://level", (event) => cb(event.payload));
 export const onMicError = (cb: (reason: string) => void): Promise<UnlistenFn> =>
   listen<string>("mic://error", (event) => cb(event.payload));
+export const onModelProgress = (cb: (progress: ModelProgress) => void): Promise<UnlistenFn> =>
+  listen<ModelProgress>("models://progress", (event) => cb(event.payload));
 
 export { isTauri };

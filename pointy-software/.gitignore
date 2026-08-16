@@ -3,6 +3,8 @@ node_modules
 /build
 # vite build output — tauri.conf.json points frontendDist at it
 /dist
+# Large local Whisper/Piper/openWakeWord assets; never commit model binaries.
+/models/
 /.svelte-kit
 /package
 .env

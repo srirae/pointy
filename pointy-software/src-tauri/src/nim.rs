@@ -66,6 +66,12 @@ const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// Anthropic deliberately lives outside `PROVIDERS`: it is a paid backup and must
+/// only run after every configured free provider has failed or is cooling down.
+const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_NAME: &str = "anthropic";
+const ANTHROPIC_MODELS: &[&str] = &["claude-3-5-haiku-latest"];
+
 /// Providers whose last call hit a rate limit or a dead connection are skipped
 /// for a few seconds so the cascade does not re-hammer a hot free pool on every
 /// click and heartbeat. Cleared lazily as the cooldown expires.
@@ -313,7 +319,27 @@ pub fn ask_screen(
             }
         }
     }
-    Err(format!("No free model answered. {last}"))
+
+    // Claude is an explicit last resort. It is never tried before Groq,
+    // Gemini, or OpenRouter and uses the native Messages API rather than an
+    // OpenAI compatibility shim, so its authentication and response contract
+    // stay unambiguous.
+    if !in_cooldown(ANTHROPIC_NAME) {
+        if let Ok(key) = load_key(&["ANTHROPIC_API_KEY"], ANTHROPIC_NAME) {
+            for model in ANTHROPIC_MODELS {
+                match complete_anthropic(
+                    &key, model, trimmed, image, subject, image_dims,
+                ) {
+                    Ok(reply) => return Ok(reply),
+                    Err(err) => {
+                        eprintln!("[nim] {ANTHROPIC_NAME} {model}: {err}");
+                        last = err;
+                    }
+                }
+            }
+        }
+    }
+    Err(format!("No configured model answered. {last}"))
 }
 
 pub fn transcribe_wav(wav: &[u8]) -> Result<String, String> {
@@ -442,6 +468,101 @@ fn complete(
     Ok(parse_reply(&content, dims))
 }
 
+fn anthropic_content(
+    prompt: &str,
+    image: Option<&str>,
+) -> serde_json::Value {
+    let mut content = Vec::new();
+    if let Some(data_url) = image {
+        if let Some((media_type, data)) = data_url.split_once(",") {
+            let media_type = media_type
+                .strip_prefix("data:")
+                .and_then(|value| value.split_once(';'))
+                .map(|(value, _)| value)
+                .unwrap_or("image/jpeg");
+            content.push(serde_json::json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": media_type, "data": data }
+            }));
+        }
+    }
+    content.push(serde_json::json!({ "type": "text", "text": prompt }));
+    serde_json::Value::Array(content)
+}
+
+fn post_anthropic(
+    key: &str,
+    payload: &serde_json::Value,
+    provider: &'static str,
+) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let response = match client()
+            .post(ANTHROPIC_URL)
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(payload)
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => {
+                last = describe_error(&err);
+                continue;
+            }
+        };
+        let status = response.status();
+        let body = response.text().map_err(|err| err.to_string())?;
+        if status.is_success() {
+            return Ok(body);
+        }
+        last = format!("{status}: {}", body.chars().take(220).collect::<String>());
+        if !(status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) {
+            break;
+        }
+    }
+    mark_cooldown(provider);
+    Err(last)
+}
+
+fn complete_anthropic(
+    key: &str,
+    model: &str,
+    question: &str,
+    image: Option<&str>,
+    app: Option<&str>,
+    dims: Option<(u32, u32)>,
+) -> Result<NimReply, String> {
+    let subject = app
+        .map(|name| format!("The user is working in {name}. "))
+        .unwrap_or_default();
+    let prompt = format!(
+        "{subject}The user asked: {question}\\n\\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        playbook_hint(question)
+    );
+    let payload = serde_json::json!({
+        "model": model,
+        "system": SYSTEM,
+        "messages": [{ "role": "user", "content": anthropic_content(&prompt, image) }],
+        "max_tokens": 512,
+        "temperature": 0.2,
+        "stream": false
+    });
+    let body = post_anthropic(key, &payload, ANTHROPIC_NAME)?;
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|err| format!("Bad Anthropic JSON: {err}"))?;
+    let raw = parsed["content"][0]["text"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "Anthropic returned no text.".to_string())?;
+    eprintln!("[nim] provider=anthropic model={model} served single-query");
+    Ok(parse_reply(&strip_think(raw), dims))
+}
+
 /// Timestamps (epoch milliseconds) of one streamed model round-trip.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamTimings {
@@ -451,6 +572,8 @@ pub struct StreamTimings {
     pub t3: u128,
     /// Full response received.
     pub t4: u128,
+    /// Provider that actually served this streamed request.
+    pub provider: &'static str,
 }
 
 /// Like `next_step`, but streams the response so the first complete sentence
@@ -496,7 +619,23 @@ pub fn next_step_streaming(
             }
         }
     }
-    Err(format!("No free model answered. {last}"))
+
+    if !in_cooldown(ANTHROPIC_NAME) {
+        if let Ok(key) = load_key(&["ANTHROPIC_API_KEY"], ANTHROPIC_NAME) {
+            for model in ANTHROPIC_MODELS {
+                match complete_anthropic_guide_streaming(
+                    &key, model, &prompt, image, image_dims, on_first_sentence,
+                ) {
+                    Ok(pair) => return Ok(pair),
+                    Err(err) => {
+                        eprintln!("[nim] stream {ANTHROPIC_NAME} {model}: {err}");
+                        last = err;
+                    }
+                }
+            }
+        }
+    }
+    Err(format!("No configured model answered. {last}"))
 }
 
 fn complete_guide_streaming(
@@ -558,7 +697,45 @@ fn complete_guide_streaming(
 
     let content = strip_think(&content);
     let reply = parse_guide(&content, dims);
-    Ok((reply, StreamTimings { t2, t3, t4 }))
+    eprintln!("[nim] provider={} model={} served guided-step", provider.name, model);
+    Ok((reply, StreamTimings { t2, t3, t4, provider: provider.name }))
+}
+
+fn complete_anthropic_guide_streaming(
+    key: &str,
+    model: &str,
+    prompt: &str,
+    image: Option<&str>,
+    dims: Option<(u32, u32)>,
+    on_first_sentence: &dyn Fn(&str),
+) -> Result<(GuideReply, StreamTimings), String> {
+    let payload = serde_json::json!({
+        "model": model,
+        "system": WALKTHROUGH_SYSTEM,
+        "messages": [{ "role": "user", "content": anthropic_content(prompt, image) }],
+        "max_tokens": 384,
+        "temperature": 0.2,
+        "stream": true
+    });
+    let mut first_sent = false;
+    let mut acc = String::new();
+    let (content, t2, t3, t4) = post_anthropic_stream(key, &payload, |delta| {
+        acc.push_str(delta);
+        if !first_sent {
+            if let Some(sentence) = first_sentence_of_say(&acc) {
+                let sentence = sanitize_guide_say(&sentence);
+                if !sentence.is_empty() {
+                    first_sent = true;
+                    on_first_sentence(&sentence);
+                }
+            }
+        }
+    })?;
+    eprintln!("[nim] provider={ANTHROPIC_NAME} model={model} served guided-step");
+    Ok((
+        parse_guide(&strip_think(&content), dims),
+        StreamTimings { t2, t3, t4, provider: ANTHROPIC_NAME },
+    ))
 }
 
 /// POST with `stream: true` and fold the SSE deltas into the full content.
@@ -622,6 +799,65 @@ fn post_stream(
                         if t3.is_none() {
                             t3 = Some(crate::events::now_millis());
                         }
+                        full.push_str(delta);
+                        on_delta(delta);
+                    }
+                }
+            }
+        }
+    }
+    let t4 = crate::events::now_millis();
+    Ok((full, t2, t3.unwrap_or(t4), t4))
+}
+
+fn post_anthropic_stream(
+    key: &str,
+    payload: &serde_json::Value,
+    mut on_delta: impl FnMut(&str),
+) -> Result<(String, u128, u128, u128), String> {
+    use std::io::Read;
+    let t2 = crate::events::now_millis();
+    let mut response = client()
+        .post(ANTHROPIC_URL)
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .json(payload)
+        .send()
+        .map_err(|err| {
+            mark_cooldown(ANTHROPIC_NAME);
+            format!("Network error: {}", describe_error(&err))
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().map_err(|err| err.to_string())?;
+        mark_cooldown(ANTHROPIC_NAME);
+        return Err(format!("{status}: {}", body.chars().take(220).collect::<String>()));
+    }
+
+    let mut full = String::new();
+    let mut buf = String::new();
+    let mut t3 = None;
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = response
+            .read(&mut chunk)
+            .map_err(|err| format!("Anthropic stream read error: {err}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        while let Some(nl) = buf.find('\n') {
+            let line: String = buf.drain(..=nl).collect();
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" { continue }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(delta) = value["delta"]["text"].as_str() {
+                    if !delta.is_empty() {
+                        if t3.is_none() { t3 = Some(crate::events::now_millis()); }
                         full.push_str(delta);
                         on_delta(delta);
                     }
@@ -1201,7 +1437,7 @@ mod tests {
         let t6v = t6.lock().unwrap().unwrap_or(timings.t4);
 
         println!("[latency reply] status={} say={}", reply.status, reply.say);
-        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6v);
+        crate::events::log_latency(t0, t1, timings.t2, timings.t3, timings.t4, t5, t6v, timings.provider);
 
         let _ = child.kill();
         listener.stop();
