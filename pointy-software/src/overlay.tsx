@@ -21,10 +21,21 @@ import {
   windowsList,
   speakText,
   stopSpeaking,
+  onPointClicked,
+  pointUnwatch,
+  pointWatch,
   type AppWindow,
   type GuideStep,
 } from "@/lib/pointy";
-import { askAboutScreen, targetToScreen } from "@/lib/screen-ask";
+import {
+  askAboutScreen,
+  locatePoint,
+  targetToScreen,
+  type PointSpot,
+} from "@/lib/screen-ask";
+
+/** Earlier exchanges handed to the model so follow-up questions make sense. */
+const HISTORY_TURNS = 4;
 
 /**
  * The overlay session.
@@ -54,10 +65,14 @@ export function Overlay() {
   const [draft, setDraft] = useState("");
   const [listening, setListening] = useState(false);
   const [listenGen, setListenGen] = useState(0);
-  const [pointedTurn, setPointedTurn] = useState<number | null>(null);
+  /** The glow currently on screen, resolved when the user asked to be shown. */
+  const [point, setPoint] = useState<{ turnId: number; spot: PointSpot } | null>(null);
+  const [locatingTurn, setLocatingTurn] = useState<number | null>(null);
   const [copiedTurn, setCopiedTurn] = useState<number | null>(null);
+  const [speakingTurn, setSpeakingTurn] = useState<number | null>(null);
   const [pos, setPos] = useState(() => defaultPos());
-  const [speak, setSpeak] = useState(true);
+  /** Answers are text first. Speech is opt-in, per answer or as an auto-read. */
+  const [speak, setSpeak] = useState(false);
   const [guide, setGuide] = useState<{ active: boolean; task: string; step: number }>({
     active: false,
     task: "",
@@ -73,6 +88,8 @@ export function Overlay() {
   const abortRef = useRef<AbortController | null>(null);
   const turnSeq = useRef(0);
   const spokenIds = useRef(new Set<number>());
+  /** Resets the Listen label once the estimated reading time has elapsed. */
+  const speechTimer = useRef<number | null>(null);
   /** False once the user types, so speech stops overwriting their edits. */
   const dictating = useRef(false);
   /** Set true when the user stops the walkthrough, so late backend events
@@ -95,8 +112,9 @@ export function Overlay() {
     scope,
     busy,
     draft,
+    turns,
   });
-  live.current = { open, picking, listening, scopeChosen, scope, busy, draft };
+  live.current = { open, picking, listening, scopeChosen, scope, busy, draft, turns };
 
   // ---------------------------------------------------------------- plumbing
 
@@ -142,6 +160,33 @@ export function Overlay() {
     return () => window.clearTimeout(timer);
   }, [copiedTurn]);
 
+  // The glow has done its job the moment the user clicks what it framed, so it
+  // gets out of the way on its own. The overlay is click-through here, so the
+  // click can only be seen from the OS side.
+  useEffect(() => {
+    if (!point) {
+      void pointUnwatch();
+      return;
+    }
+    void pointWatch(point.spot.target);
+    return () => void pointUnwatch();
+  }, [point]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    onPointClicked(() => {
+      if (!cancelled) setPoint(null);
+    }).then((off) => {
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   // All user-facing speech uses the local Piper-first Rust path. Keeping this
   // out of Web Speech avoids browser-dependent voices and duplicate playback.
   const speakAloud = useCallback((text: string) => {
@@ -149,17 +194,55 @@ export function Overlay() {
     void speakText(text);
   }, []);
 
-  // Speak finished answers out loud. Newly-done turns only.
+  // Auto-read is off by default: the answer is text, and speech is something the
+  // user asks for. When they do turn it on, only newly-finished turns are read.
   useEffect(() => {
     if (!speak) return;
     for (const turn of turns) {
       if (turn.status !== "done" || !turn.answer || spokenIds.current.has(turn.id)) continue;
       spokenIds.current.add(turn.id);
-      const text = turn.answer.replace(/[*_`#>\[\]()~]/g, "").trim();
+      const text = plainSpeech(turn.answer);
       if (!text) continue;
       speakAloud(text);
     }
   }, [turns, speak, speakAloud]);
+
+  const hushSpeech = useCallback(() => {
+    if (speechTimer.current !== null) {
+      window.clearTimeout(speechTimer.current);
+      speechTimer.current = null;
+    }
+    setSpeakingTurn(null);
+  }, []);
+
+  useEffect(() => () => hushSpeech(), [hushSpeech]);
+
+  /** Read one answer aloud, or stop the one that is playing. */
+  const listen = useCallback(
+    (turn: Turn) => {
+      const stopping = speakingTurn === turn.id;
+      void stopSpeaking();
+      hushSpeech();
+      if (stopping) return;
+
+      const text = plainSpeech(turn.answer);
+      if (!text) return;
+      spokenIds.current.add(turn.id); // don't let auto-read repeat it
+      setSpeakingTurn(turn.id);
+      speakAloud(text);
+
+      // The voice reports no completion event, so the button label is restored
+      // on a rough reading-time estimate. Stop stays accurate either way.
+      speechTimer.current = window.setTimeout(
+        () => {
+          speechTimer.current = null;
+          setSpeakingTurn(null);
+        },
+        900 + (text.length / 13) * 1000,
+      );
+    },
+    [hushSpeech, speakAloud, speakingTurn],
+  );
 
   // Walkthrough events arrive from the backend; speak them as they land.
   useEffect(() => {
@@ -235,7 +318,7 @@ export function Overlay() {
 
   useEffect(() => {
     if (!guideStep || !speak || guideStep.speak === false) return;
-    const text = guideStep.say.replace(/[*_`#>\[\]()~]/g, "").trim();
+    const text = plainSpeech(guideStep.say);
     if (!text) return;
     speakAloud(text);
   }, [guideStep, speak, speakAloud]);
@@ -257,6 +340,7 @@ export function Overlay() {
     abortRef.current?.abort();
     abortRef.current = null;
     void stopSpeaking();
+    hushSpeech();
     spokenIds.current.clear();
     guideStoppedRef.current = true;
     void guideStop();
@@ -272,9 +356,10 @@ export function Overlay() {
     setTurns([]);
     setDraft("");
     setListening(false);
-    setPointedTurn(null);
+    setPoint(null);
+    setLocatingTurn(null);
     setWindows([]);
-  }, []);
+  }, [hushSpeech]);
 
   const close = useCallback(() => {
     abortRef.current?.abort();
@@ -331,10 +416,18 @@ export function Overlay() {
         return;
       }
 
+      // Only exchanges that came before this one, so a retry never quotes the
+      // answers that followed it.
+      const history = live.current.turns
+        .filter((prior) => prior.id < turnId && prior.status === "done" && prior.answer)
+        .slice(-HISTORY_TURNS)
+        .map((prior) => ({ question: prior.question, answer: prior.answer }));
+
       const reply = await askAboutScreen(
         question,
         app?.id ?? null,
         app?.app ?? null,
+        history,
         ctrl.signal,
       );
       if (ctrl.signal.aborted) return;
@@ -397,7 +490,7 @@ export function Overlay() {
 
     const id = ++turnSeq.current;
     setDraft("");
-    setPointedTurn(null);
+    setPoint(null);
     setTurns((current) => [
       ...current,
       { id, question, answer: "", target: null, dot: null, status: "asking", error: null },
@@ -417,14 +510,14 @@ export function Overlay() {
     abortRef.current?.abort();
     abortRef.current = null;
     setTurns((current) => current.filter((kept) => kept.id !== turn.id));
-    setPointedTurn((current) => (current === turn.id ? null : current));
+    setPoint((current) => (current?.turnId === turn.id ? null : current));
     setDraft(turn.question);
   }, []);
 
   const retry = useCallback(
     (turn: Turn) => {
       if (live.current.busy) return;
-      setPointedTurn((current) => (current === turn.id ? null : current));
+      setPoint((current) => (current?.turnId === turn.id ? null : current));
       setTurns((current) =>
         current.map((kept) =>
           kept.id === turn.id
@@ -450,7 +543,7 @@ export function Overlay() {
   const changeApp = useCallback(() => {
     void stopListening();
     setPicking(true);
-    setPointedTurn(null);
+    setPoint(null);
     loadWindows();
   }, [loadWindows, stopListening]);
 
@@ -471,6 +564,35 @@ export function Overlay() {
     if (guideStep?.say) speakAloud(guideStep.say);
   }, [guideStep, speakAloud]);
 
+  /**
+   * Show or hide the glow for one answer.
+   *
+   * The box that arrived with the answer describes the screen as it was when the
+   * question was sent. Rather than trust it, the control is looked up again here,
+   * at the moment the user asks to be shown — so scrolling or moving the window
+   * in between no longer leaves the glow behind on empty space.
+   */
+  const togglePoint = useCallback(
+    async (turn: Turn) => {
+      if (point?.turnId === turn.id) {
+        setPoint(null);
+        return;
+      }
+      if (!turn.target) return;
+
+      setLocatingTurn(turn.id);
+      try {
+        const spot = await locatePoint(turn.target.label, live.current.scope?.id ?? null, {
+          target: turn.target,
+        });
+        setPoint({ turnId: turn.id, spot });
+      } finally {
+        setLocatingTurn((current) => (current === turn.id ? null : current));
+      }
+    },
+    [point],
+  );
+
   const copy = useCallback((turn: Turn) => {
     void navigator.clipboard?.writeText(turn.answer).catch(() => {});
     setCopiedTurn(turn.id);
@@ -486,7 +608,7 @@ export function Overlay() {
       setDraft("");
       setScope(null);
       setScopeChosen(false);
-      setPointedTurn(null);
+      setPoint(null);
       setPicking(true);
       setOpen(true);
       loadWindows();
@@ -530,8 +652,8 @@ export function Overlay() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      if (pointedTurn !== null) {
-        setPointedTurn(null);
+      if (point !== null) {
+        setPoint(null);
         return;
       }
       if (busy) {
@@ -542,7 +664,7 @@ export function Overlay() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, close, pointedTurn, stop]);
+  }, [busy, close, point, stop]);
 
   // ---------------------------------------------------------------- render
 
@@ -567,9 +689,7 @@ export function Overlay() {
     },
   };
 
-  const pointed = turns.find((turn) => turn.id === pointedTurn) ?? null;
   const guideTarget = guideStep?.target ? targetToScreen(guideStep.target, guideStep) : null;
-  const guideDot = guideStep?.dot ?? null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-transparent">
@@ -592,7 +712,7 @@ export function Overlay() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {!leaving && pointed?.target && (
+        {!leaving && point && (
           <motion.div
             key="hint"
             className="absolute inset-0 z-[5]"
@@ -600,16 +720,13 @@ export function Overlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <ClickHint
-              target={pointed.target}
-              center={pointed.dot ? { x: pointed.dot.cx, y: pointed.dot.cy } : undefined}
-            />
+            <ClickHint target={point.spot.target} />
           </motion.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
-        {!leaving && !pointed?.target && guideTarget && (
+        {!leaving && !point && guideTarget && (
           <motion.div
             key="guide-hint"
             className="absolute inset-0 z-[5]"
@@ -617,11 +734,7 @@ export function Overlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <ClickHint
-              target={guideTarget}
-              center={guideDot ? { x: guideDot.cx, y: guideDot.cy } : undefined}
-              flash={guideWarn !== null}
-            />
+            <ClickHint target={guideTarget} flash={guideWarn !== null} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -668,12 +781,13 @@ export function Overlay() {
                 micError={listening ? voice.error : null}
                 onEdit={edit}
                 onRetry={retry}
-                pointedTurn={pointedTurn}
-                onTogglePoint={(turn) =>
-                  setPointedTurn((current) => (current === turn.id ? null : turn.id))
-                }
+                pointedTurn={point?.turnId ?? null}
+                locatingTurn={locatingTurn}
+                onTogglePoint={(turn) => void togglePoint(turn)}
                 copiedTurn={copiedTurn}
                 onCopy={copy}
+                speakingTurn={speakingTurn}
+                onListen={listen}
                 speakEnabled={speak}
                 onToggleSpeak={() => setSpeak((s) => !s)}
                 guideActive={guide.active}
@@ -698,6 +812,11 @@ function defaultPos() {
     x: Math.max(200, window.innerWidth - 220),
     y: Math.max(24, window.innerHeight * 0.24),
   };
+}
+
+/** Markdown emphasis is for the eye; strip it before anything is read aloud. */
+function plainSpeech(text: string) {
+  return text.replace(/[*_`#>\[\]()~]/g, "").trim();
 }
 
 /** Keep model plumbing — JSON, coordinate dumps — out of the glass. */

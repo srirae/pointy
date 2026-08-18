@@ -129,6 +129,22 @@ export interface AskReply extends NimReply {
   dot: DotPoint | null;
 }
 
+/** One earlier exchange, sent back so the model can resolve follow-ups. */
+export interface ChatTurn {
+  question: string;
+  answer: string;
+}
+
+/**
+ * A control re-found in the live accessibility tree. Unlike `AskReply.target`,
+ * these fractions are already relative to the whole desktop — the overlay's own
+ * coordinate space — so no shot mapping is needed.
+ */
+export interface LocatedTarget {
+  target: ClickTarget;
+  dot: DotPoint;
+}
+
 /** Local usage-tracking totals: app/title -> seconds. */
 export interface UsageData {
   total: Record<string, number>;
@@ -307,6 +323,11 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
         w: 1,
         h: 1,
       } as T;
+    case "locate_target":
+      return null as T;
+    case "point_watch":
+    case "point_unwatch":
+      return undefined as T;
     case "transcribe_wav":
       return "" as T;
     case "usage_stats":
@@ -399,12 +420,43 @@ export const captureScope = (windowId?: number | null) =>
 export const wakeSession = () => invoke<WakeSession>("wake_session");
 export const wakeSetTranscript = (transcript: string) =>
   invoke<void>("wake_set_transcript", { transcript });
-export const askScreen = (question: string, windowId?: number | null, app?: string | null) =>
+export const askScreen = (
+  question: string,
+  windowId?: number | null,
+  app?: string | null,
+  history?: ChatTurn[],
+) =>
   invoke<AskReply>("ask_screen", {
     question,
     windowId: windowId ?? null,
     appName: app ?? null,
+    history: history ?? [],
   });
+
+/**
+ * Re-find a named control on the screen as it looks right now.
+ *
+ * `expect` is where the answer thought it was, in desktop fractions. Its
+ * coordinates are stale, but it still says which region to search, which is what
+ * stops a navbar full of same-named elements from being picked at random.
+ */
+export const locateTarget = (
+  label: string,
+  windowId?: number | null,
+  expect?: { x: number; y: number; w: number; h: number } | null,
+) =>
+  invoke<LocatedTarget | null>("locate_target", {
+    label,
+    windowId: windowId ?? null,
+    expect: expect ?? null,
+  });
+
+/** Watch for a real click inside the highlighted box. */
+export const pointWatch = (rect: { x: number; y: number; w: number; h: number }) =>
+  invoke<void>("point_watch", { rect });
+export const pointUnwatch = () => invoke<void>("point_unwatch");
+export const onPointClicked = (cb: () => void): Promise<UnlistenFn> =>
+  listen<unknown>("point://clicked", () => cb());
 export const transcribeWav = (wavBase64: string) =>
   invoke<string>("transcribe_wav", { wavBase64 });
 

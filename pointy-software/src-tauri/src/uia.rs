@@ -147,6 +147,36 @@ pub struct DotPoint {
     pub cy: f64,
 }
 
+/// Roughly where the control is expected to be: physical pixels, virtual-screen
+/// coordinates.
+///
+/// Name matching alone cannot tell apart the several elements a navbar exposes
+/// under one name — a tooltip, the button, the edit box, and the container that
+/// wraps them all often share it. This narrows the choice to the one actually
+/// sitting where the answer said it was. It only ranks candidates; it never
+/// rejects the last one standing, so a bad hint degrades to name matching
+/// rather than refusing to point.
+#[derive(Debug, Clone, Copy)]
+pub struct Hint {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// Build a hint from a box given as 0..1 fractions of the virtual desktop.
+pub fn hint_from_fractions(x: f64, y: f64, w: f64, h: f64) -> Hint {
+    let (vx, vy, vw, vh) = crate::capture::virtual_desktop_bounds();
+    let vw = vw.max(1) as f64;
+    let vh = vh.max(1) as f64;
+    Hint {
+        x: (vx as f64 + x * vw).round() as i32,
+        y: (vy as f64 + y * vh).round() as i32,
+        w: (w * vw).round().max(1.0) as i32,
+        h: (h * vh).round().max(1.0) as i32,
+    }
+}
+
 /// One "confusion zone": a nearby interactive control someone might click by
 /// mistake instead of the target. Physical-pixel rect in virtual-screen
 /// coordinates, the same space `GetCursorPos` reports, plus the element's name
@@ -325,7 +355,15 @@ pub fn resolve(
     shot: &AskCapture,
     target: &ClickTarget,
 ) -> (Option<ClickTarget>, Option<DotPoint>) {
-    let Some(point) = point_for_label(window_id, &target.label) else {
+    // The model's own box is the hint: it is rough, but it reliably says which
+    // part of the window to look in, which is what name matching cannot.
+    let hint = hint_from_fractions(
+        shot.x + target.x * shot.w,
+        shot.y + target.y * shot.h,
+        target.w * shot.w,
+        target.h * shot.h,
+    );
+    let Some(point) = point_for_label(window_id, &target.label, Some(hint)) else {
         return (Some(target.clone()), None);
     };
 
@@ -363,8 +401,8 @@ pub fn resolve(
 /// tree, log the POSITION line, and return the center dot plus virtual-desktop
 /// fractions.
 #[cfg(windows)]
-pub fn point_for_label(window_id: u32, label: &str) -> Option<DotPoint> {
-    let rect = find_rect(window_id, label)?;
+pub fn point_for_label(window_id: u32, label: &str, hint: Option<Hint>) -> Option<DotPoint> {
+    let rect = find_rect(window_id, label, hint)?;
     dot_from_rect(rect, label)
 }
 
@@ -467,7 +505,7 @@ fn first_named_thread(window_id: u32) -> Option<(RECT, String)> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn point_for_label(_window_id: u32, label: &str) -> Option<DotPoint> {
+pub fn point_for_label(_window_id: u32, label: &str, _hint: Option<Hint>) -> Option<DotPoint> {
     // macOS: the AXUIElement frame comes top-left-origin in CoreGraphics
     // points; the screen's Y must be flipped before use:
     //   flippedY = screenHeight - axY - elementHeight
@@ -478,7 +516,7 @@ pub fn point_for_label(_window_id: u32, label: &str) -> Option<DotPoint> {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn point_for_label(_window_id: u32, label: &str) -> Option<DotPoint> {
+pub fn point_for_label(_window_id: u32, label: &str, _hint: Option<Hint>) -> Option<DotPoint> {
     let _ = label;
     None
 }
@@ -499,18 +537,18 @@ fn monitor_scale_at(x: i32, y: i32) -> Option<f64> {
 }
 
 #[cfg(windows)]
-fn find_rect(window_id: u32, label: &str) -> Option<RECT> {
+fn find_rect(window_id: u32, label: &str, hint: Option<Hint>) -> Option<RECT> {
     let label = label.to_string();
     std::thread::Builder::new()
         .name("pointy-uia-refine".into())
-        .spawn(move || uia_thread(window_id, &label))
+        .spawn(move || uia_thread(window_id, &label, hint))
         .ok()?
         .join()
         .ok()?
 }
 
 #[cfg(windows)]
-fn uia_thread(window_id: u32, label: &str) -> Option<RECT> {
+fn uia_thread(window_id: u32, label: &str, hint: Option<Hint>) -> Option<RECT> {
     unsafe {
         let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let automation: IUIAutomation =
@@ -522,18 +560,26 @@ fn uia_thread(window_id: u32, label: &str) -> Option<RECT> {
         let elements = root.FindAll(TreeScope_Descendants, &condition).ok()?;
         let len = elements.Length().ok()?;
 
+        // Every per-element failure skips that element. Using `?` here meant one
+        // awkward node — common in browser trees — abandoned the whole search and
+        // silently fell back to the model's guessed box.
         let mut best: Option<(f64, RECT)> = None;
         for i in 0..len.min(MAX_ELEMENTS) {
-            let element = elements.GetElement(i).ok()?;
-            let name = element.CurrentName().ok()?;
+            let Ok(element) = elements.GetElement(i) else { continue };
+            let Ok(name) = element.CurrentName() else { continue };
             let Some(score) = match_score(label, &name.to_string()) else {
                 continue;
             };
-            let rect = element.CurrentBoundingRectangle().ok()?;
+            // Collapsed menus and scrolled-away rows keep their rectangles, so
+            // without this the glow lands on something nobody can see.
+            if element.CurrentIsOffscreen().map(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let Ok(rect) = element.CurrentBoundingRectangle() else { continue };
             if rect.right - rect.left <= 0 || rect.bottom - rect.top <= 0 {
                 continue;
             }
-            let score = score * control_bonus(&element);
+            let score = score * control_bonus(&element) * hint_bonus(rect, hint);
             if best.as_ref().map_or(true, |(best_score, _)| score > *best_score) {
                 best = Some((score, rect));
             }
@@ -549,10 +595,47 @@ fn uia_thread(window_id: u32, label: &str) -> Option<RECT> {
 #[cfg(windows)]
 fn control_bonus(element: &IUIAutomationElement) -> f64 {
     if is_interactive(control_type(element)) {
-        1.05
+        1.15
     } else {
-        0.95
+        0.9
     }
+}
+
+/// Rank a candidate by how well its rectangle agrees with the hint.
+///
+/// The range is deliberately kept above zero and below the point where a good
+/// name match would drop under the accept threshold: geometry is here to choose
+/// between look-alikes, not to veto the only candidate. 1.0 with no hint leaves
+/// the old name-only behaviour untouched.
+#[cfg(windows)]
+fn hint_bonus(rect: RECT, hint: Option<Hint>) -> f64 {
+    let Some(hint) = hint else { return 1.0 };
+    let (rw, rh) = (rect.right - rect.left, rect.bottom - rect.top);
+    if rw <= 0 || rh <= 0 || hint.w <= 0 || hint.h <= 0 {
+        return 1.0;
+    }
+
+    // How much of the candidate sits inside the expected region. Measured
+    // against the candidate, so a small control fully inside a slightly bigger
+    // guessed box still scores 1.
+    let ix = (rect.right.min(hint.x + hint.w) - rect.left.max(hint.x)).max(0) as f64;
+    let iy = (rect.bottom.min(hint.y + hint.h) - rect.top.max(hint.y)).max(0) as f64;
+    let area = rw as f64 * rh as f64;
+    let covered = (ix * iy / area).clamp(0.0, 1.0);
+
+    // Centre distance separates two identically named controls sitting at
+    // opposite ends of the same toolbar.
+    let span = ((hint.w as f64).powi(2) + (hint.h as f64).powi(2)).sqrt().max(1.0);
+    let dx = (rect.left as f64 + rw as f64 / 2.0) - (hint.x as f64 + hint.w as f64 / 2.0);
+    let dy = (rect.top as f64 + rh as f64 / 2.0) - (hint.y as f64 + hint.h as f64 / 2.0);
+    let near = (1.0 - (dx * dx + dy * dy).sqrt() / (span * 2.0)).clamp(0.0, 1.0);
+
+    // A match far larger than expected is usually the container that wraps the
+    // control and carries the same name. Framing it would glow half the navbar.
+    let bloat = (area / (hint.w as f64 * hint.h as f64)).max(1.0);
+    let tidy = (1.0 / bloat.sqrt()).clamp(0.25, 1.0);
+
+    0.7 + 0.5 * covered + 0.25 * near + 0.15 * tidy
 }
 
 /// Score how well `name` (a real UI element) matches `label` (the model's guess).

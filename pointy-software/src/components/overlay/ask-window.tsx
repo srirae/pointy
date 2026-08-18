@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Copy,
   Crosshair,
+  Loader2,
   Mic,
   MicOff,
   Pencil,
@@ -72,9 +73,12 @@ export function AskWindow({
   onEdit,
   onRetry,
   pointedTurn,
+  locatingTurn,
   onTogglePoint,
   copiedTurn,
   onCopy,
+  speakingTurn,
+  onListen,
   speakEnabled,
   onToggleSpeak,
   guideActive,
@@ -107,9 +111,14 @@ export function AskWindow({
   onEdit: (turn: Turn) => void;
   onRetry: (turn: Turn) => void;
   pointedTurn: number | null;
+  /** Turn whose control is being re-found in the live UI tree right now. */
+  locatingTurn: number | null;
   onTogglePoint: (turn: Turn) => void;
   copiedTurn: number | null;
   onCopy: (turn: Turn) => void;
+  /** Turn currently being read aloud, if any. */
+  speakingTurn: number | null;
+  onListen: (turn: Turn) => void;
   speakEnabled: boolean;
   onToggleSpeak: () => void;
   guideActive: boolean;
@@ -218,8 +227,12 @@ export function AskWindow({
           type="button"
           onClick={onToggleSpeak}
           onPointerDown={(event) => event.stopPropagation()}
-          aria-label={speakEnabled ? "Mute voice" : "Unmute voice"}
-          title={speakEnabled ? "Mute voice" : "Unmute voice"}
+          aria-label={speakEnabled ? "Stop reading answers aloud" : "Read answers aloud automatically"}
+          title={
+            speakEnabled
+              ? "Answers are read aloud automatically"
+              : "Answers stay silent — use Listen on any answer"
+          }
           className="flex size-5 shrink-0 items-center justify-center rounded-full text-[#6b7785] transition-colors hover:bg-[#2e3a47]/10 hover:text-[#2e3a47]"
         >
           {speakEnabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
@@ -261,11 +274,14 @@ export function AskWindow({
                 turn={turn}
                 busy={busy}
                 pointed={pointedTurn === turn.id}
+                locating={locatingTurn === turn.id}
                 copied={copiedTurn === turn.id}
+                speaking={speakingTurn === turn.id}
                 onEdit={onEdit}
                 onRetry={onRetry}
                 onTogglePoint={onTogglePoint}
                 onCopy={onCopy}
+                onListen={onListen}
               />
             ))}
           </div>
@@ -410,20 +426,26 @@ function TurnBlock({
   turn,
   busy,
   pointed,
+  locating,
   copied,
+  speaking,
   onEdit,
   onRetry,
   onTogglePoint,
   onCopy,
+  onListen,
 }: {
   turn: Turn;
   busy: boolean;
   pointed: boolean;
+  locating: boolean;
   copied: boolean;
+  speaking: boolean;
   onEdit: (turn: Turn) => void;
   onRetry: (turn: Turn) => void;
   onTogglePoint: (turn: Turn) => void;
   onCopy: (turn: Turn) => void;
+  onListen: (turn: Turn) => void;
 }) {
   const asking = turn.status === "asking";
 
@@ -480,7 +502,9 @@ function TurnBlock({
               <button
                 type="button"
                 onClick={() => onTogglePoint(turn)}
-                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.75rem] font-semibold tracking-[-0.01em]"
+                disabled={locating}
+                title="Find this control on the screen as it looks right now"
+                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.75rem] font-semibold tracking-[-0.01em] disabled:opacity-70"
                 style={{
                   background: pointed
                     ? "rgba(13,74,71,0.12)"
@@ -488,8 +512,31 @@ function TurnBlock({
                   color: pointed ? "#0d4a47" : "#2e3a47",
                 }}
               >
-                <Crosshair className="size-3" />
-                {pointed ? "hide point" : "point it"}
+                {locating ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Crosshair className="size-3" />
+                )}
+                {locating ? "finding it" : pointed ? "hide point" : "point it"}
+              </button>
+            )}
+            {turn.status === "done" && turn.answer && (
+              <button
+                type="button"
+                onClick={() => onListen(turn)}
+                title={speaking ? "Stop reading" : "Read this answer aloud"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[0.75rem] font-semibold transition-colors ${
+                  speaking
+                    ? "bg-[#0d4a47]/10 text-[#0d4a47]"
+                    : "text-[#6b7785] hover:bg-[#2e3a47]/8 hover:text-[#2e3a47]"
+                }`}
+              >
+                {speaking ? (
+                  <Square className="size-3 fill-current" />
+                ) : (
+                  <Volume2 className="size-3" />
+                )}
+                {speaking ? "Stop" : "Listen"}
               </button>
             )}
             <button

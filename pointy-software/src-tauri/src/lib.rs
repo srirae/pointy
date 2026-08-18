@@ -12,6 +12,7 @@
 
 mod audio;
 mod capture;
+mod clickwatch;
 mod events;
 mod guide;
 mod hotkey;
@@ -240,20 +241,30 @@ struct AskReply {
     h: f64,
 }
 
+/// How many earlier exchanges the model is shown. Enough for "that one" to
+/// resolve, small enough that tokens and latency stay flat as a session grows.
+const HISTORY_TURNS: usize = 4;
+
 #[tauri::command]
 async fn ask_screen(
     app: AppHandle,
     question: String,
     window_id: Option<u32>,
     app_name: Option<String>,
+    history: Option<Vec<nim::ChatTurn>>,
 ) -> Result<AskReply, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Trim here rather than trusting the caller, so the cap holds however
+        // the frontend evolves.
+        let history = history.unwrap_or_default();
+        let recent = &history[history.len().saturating_sub(HISTORY_TURNS)..];
         let shot = overlay::snapshot_for_ask(&app, window_id)?;
         let reply = nim::ask_screen(
             &question,
             Some(&shot.image),
             app_name.as_deref(),
             Some((shot.width, shot.height)),
+            recent,
         )?;
         let (target, dot) = refine_target(window_id, &shot, reply.target);
         Ok(AskReply {
@@ -297,6 +308,85 @@ fn refine_target(
     target: Option<nim::ClickTarget>,
 ) -> (Option<nim::ClickTarget>, Option<uia::DotPoint>) {
     (target, None)
+}
+
+/// A box as 0..1 fractions of the virtual desktop — the overlay's coordinate
+/// space.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+struct FracRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// A control found in the live accessibility tree. Both the box and the dot are
+/// fractions of the virtual desktop, which is the overlay's own coordinate
+/// space, so the frontend needs no shot mapping.
+#[derive(serde::Serialize)]
+struct LocatedTarget {
+    target: nim::ClickTarget,
+    dot: uia::DotPoint,
+}
+
+/// Re-find a control by name, right now.
+///
+/// "point it" calls this at click time instead of reusing the box from the
+/// answer. The screenshot that produced that box may be seconds old, and if the
+/// user has scrolled or moved the window since, the old coordinates would glow
+/// empty space. Reading the tree again is cheap and always current.
+#[tauri::command]
+async fn locate_target(
+    label: String,
+    window_id: Option<u32>,
+    expect: Option<FracRect>,
+) -> Result<Option<LocatedTarget>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let label = label.trim();
+        if label.is_empty() {
+            return None;
+        }
+        // The box from the answer is stale as coordinates but still says which
+        // region to search, which is what keeps look-alike navbar entries out.
+        let hint = expect.map(|r| uia::hint_from_fractions(r.x, r.y, r.w, r.h));
+        let dot = uia::point_for_label(locate_window(window_id)?, label, hint)?;
+        Some(LocatedTarget {
+            target: nim::ClickTarget {
+                label: dot.label.clone(),
+                x: dot.fx,
+                y: dot.fy,
+                w: dot.fw,
+                h: dot.fh,
+            },
+            dot,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Watch for the click the highlight is asking for, so it can bow out once the
+/// user has acted on it. `rect` is in virtual-desktop fractions.
+#[tauri::command]
+fn point_watch(app: AppHandle, rect: FracRect) {
+    clickwatch::watch(app, rect.x, rect.y, rect.w, rect.h);
+}
+
+#[tauri::command]
+fn point_unwatch() {
+    clickwatch::unwatch();
+}
+
+/// "This whole screen" has no picked window, so fall back to whatever is in
+/// front — that is what the user is looking at.
+#[cfg(windows)]
+fn locate_window(window_id: Option<u32>) -> Option<u32> {
+    window_id.or_else(uia::foreground_window)
+}
+
+#[cfg(not(windows))]
+fn locate_window(window_id: Option<u32>) -> Option<u32> {
+    window_id
 }
 
 #[tauri::command]
@@ -505,6 +595,9 @@ pub fn run() {
             overlay_set_passthrough,
             overlay_set_hit_rect,
             ask_screen,
+            locate_target,
+            point_watch,
+            point_unwatch,
             transcribe_wav,
             windows_list,
             window_focus,

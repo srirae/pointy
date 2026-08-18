@@ -205,6 +205,7 @@ Respond with ONLY valid JSON (no markdown fences, no extra text):
 {"answer":"1-2 short sentences. Bold UI names with **double asterisks**.","advice":"one short next step","multi_step":false,"action":"click","confidence":0.92,"target":{"label":"Send","x":0.22,"y":0.12,"w":0.08,"h":0.04}}
 
 Rules:
+- Earlier turns in this conversation are context for what the user means, so resolve follow-ups like "that one" or "what about the other button" against them. Only the newest message has a screenshot: describe and point at what is in THAT image, never a control you only saw in an earlier turn.
 - Answer for the app in the image (Cursor, VS Code, Chrome, Word, Explorer, …). Describe only controls you can actually see.
 - Never mention Pointy, never describe Pointy's glass panel, never tell the user to click Pointy.
 - If a frosted panel labeled Pointy is somehow in the image, ignore it completely.
@@ -258,6 +259,44 @@ pub struct NimReply {
     pub target: Option<ClickTarget>,
 }
 
+/// One earlier exchange, replayed so follow-ups like "what about the other one?"
+/// make sense. Only the latest question carries a screenshot — resending old
+/// images would cost latency for a view the user has already moved on from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatTurn {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Say out loud that this is a continuation.
+///
+/// Replaying the earlier messages is not enough on its own: with a fresh
+/// screenshot attached, models tend to treat the newest question as a standalone
+/// request and ignore what "it" or "that one" referred to. Naming the situation
+/// is what makes short follow-ups resolve.
+fn followup_hint(history: &[ChatTurn]) -> &'static str {
+    if history.is_empty() {
+        ""
+    } else {
+        "This continues the conversation above, about the same app. If the question is short or uses words like it, that, or the other one, work out what it refers to from what you already told them, then answer against the new screenshot. "
+    }
+}
+
+/// Prior turns replayed to the model, newest last.
+fn history_messages(history: &[ChatTurn]) -> Vec<serde_json::Value> {
+    let mut messages = Vec::with_capacity(history.len() * 2);
+    for turn in history {
+        let question = turn.question.trim();
+        let answer = turn.answer.trim();
+        if question.is_empty() || answer.is_empty() {
+            continue;
+        }
+        messages.push(serde_json::json!({ "role": "user", "content": question }));
+        messages.push(serde_json::json!({ "role": "assistant", "content": answer }));
+    }
+    messages
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuideReply {
     pub status: String,
@@ -272,6 +311,7 @@ pub fn ask_screen(
     screenshot: Option<&str>,
     app: Option<&str>,
     image_dims: Option<(u32, u32)>,
+    history: &[ChatTurn],
 ) -> Result<NimReply, String> {
     let trimmed = question.trim();
     if trimmed.is_empty() {
@@ -310,6 +350,7 @@ pub fn ask_screen(
                 image_dims,
                 provider.name,
                 provider.no_think,
+                history,
             ) {
                 Ok(reply) => return Ok(reply),
                 Err(err) => {
@@ -328,7 +369,7 @@ pub fn ask_screen(
         if let Ok(key) = load_key(&["ANTHROPIC_API_KEY"], ANTHROPIC_NAME) {
             for model in ANTHROPIC_MODELS {
                 match complete_anthropic(
-                    &key, model, trimmed, image, subject, image_dims,
+                    &key, model, trimmed, image, subject, image_dims, history,
                 ) {
                     Ok(reply) => return Ok(reply),
                     Err(err) => {
@@ -416,13 +457,15 @@ fn complete(
     dims: Option<(u32, u32)>,
     provider: &'static str,
     no_think: bool,
+    history: &[ChatTurn],
 ) -> Result<NimReply, String> {
     let subject = match app {
         Some(name) => format!("The user is working in {name}. "),
         None => String::new(),
     };
     let prompt = format!(
-        "{subject}The user asked: {question}\n\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        "{subject}{}The user asked: {question}\n\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        followup_hint(history),
         playbook_hint(question)
     );
     let user = if let Some(url) = image {
@@ -434,14 +477,15 @@ fn complete(
         serde_json::Value::String(prompt)
     };
 
+    let mut messages = vec![serde_json::json!({ "role": "system", "content": SYSTEM })];
+    messages.extend(history_messages(history));
+    messages.push(serde_json::json!({ "role": "user", "content": user }));
+
     // 512 leaves room for a thinking model's internal reasoning without
     // truncating the JSON answer.
     let mut payload = serde_json::json!({
         "model": model,
-        "messages": [
-            { "role": "system", "content": SYSTEM },
-            { "role": "user", "content": user }
-        ],
+        "messages": messages,
         "temperature": 0.2,
         "top_p": 0.7,
         "max_tokens": 512,
@@ -535,18 +579,25 @@ fn complete_anthropic(
     image: Option<&str>,
     app: Option<&str>,
     dims: Option<(u32, u32)>,
+    history: &[ChatTurn],
 ) -> Result<NimReply, String> {
     let subject = app
         .map(|name| format!("The user is working in {name}. "))
         .unwrap_or_default();
     let prompt = format!(
-        "{subject}The user asked: {question}\\n\\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        "{subject}{}The user asked: {question}\\n\\nThis screenshot is what they are looking at right now. Answer where to click. target must be that element's exact box (0-1 fractions of this image). JSON only.{}",
+        followup_hint(history),
         playbook_hint(question)
     );
+    let mut messages = history_messages(history);
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": anthropic_content(&prompt, image)
+    }));
     let payload = serde_json::json!({
         "model": model,
         "system": SYSTEM,
-        "messages": [{ "role": "user", "content": anthropic_content(&prompt, image) }],
+        "messages": messages,
         "max_tokens": 512,
         "temperature": 0.2,
         "stream": false
@@ -1331,6 +1382,7 @@ mod tests {
             Some(&shot.image),
             None,
             Some((shot.width, shot.height)),
+            &[],
         );
         println!("[timing] model round-trip: {:?}", t1.elapsed());
         match &reply {

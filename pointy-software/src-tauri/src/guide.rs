@@ -138,7 +138,7 @@ fn spawn(
             // guard it from the very first step.
             let mut current_dot: Option<DotPoint> =
                 match (&first_label, resolve_window(window_id)) {
-                    (Some(label), Some(id)) => crate::uia::point_for_label(id, label),
+                    (Some(label), Some(id)) => crate::uia::point_for_label(id, label, None),
                     _ => None,
                 };
 
