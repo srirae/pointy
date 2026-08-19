@@ -105,6 +105,14 @@ struct SttProvider {
     url: &'static str,
     keys: &'static [&'static str],
     models: &'static [&'static str],
+    /// Whisper's speech-to-English endpoint. Distinct from transcription: it
+    /// auto-detects the spoken language and returns English, which is exactly
+    /// what the vision model downstream needs. None means the provider cannot
+    /// translate and is skipped for non-English speech.
+    translate_url: Option<&'static str>,
+    /// Only full Whisper is documented as supporting translation, so the turbo
+    /// model is deliberately absent here even though it leads for transcription.
+    translate_models: &'static [&'static str],
 }
 
 const STT_PROVIDERS: &[SttProvider] = &[
@@ -113,6 +121,8 @@ const STT_PROVIDERS: &[SttProvider] = &[
         url: "https://api.groq.com/openai/v1/audio/transcriptions",
         keys: &["GROQ_API_KEY"],
         models: &["whisper-large-v3-turbo", "whisper-large-v3"],
+        translate_url: Some("https://api.groq.com/openai/v1/audio/translations"),
+        translate_models: &["whisper-large-v3"],
     },
     SttProvider {
         name: "nvidia",
@@ -123,6 +133,8 @@ const STT_PROVIDERS: &[SttProvider] = &[
             "nvidia/whisper-large-v3",
             "nvidia/parakeet-tdt-0.6b-v2",
         ],
+        translate_url: None,
+        translate_models: &[],
     },
 ];
 
@@ -268,6 +280,71 @@ pub struct ChatTurn {
     pub answer: String,
 }
 
+/// Translate an answer for speaking aloud.
+///
+/// The panel keeps showing English — this exists only so the voice can meet the
+/// user in their own language. Failure is never fatal to the caller: speaking
+/// the English original is a better outcome than silence.
+pub fn translate(text: &str, language: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+    let system = format!(
+        "Translate the user's message into {language}. It will be read aloud by a screen-reading assistant, so keep it short, natural and spoken-sounding. Names of buttons and menus stay exactly as they are, untranslated, because the user has to find them on screen. Reply with the translation only — no quotes, no notes, no original text."
+    );
+
+    let mut last = "No model could translate that.".to_string();
+    for provider in PROVIDERS {
+        if in_cooldown(provider.name) {
+            continue;
+        }
+        let Ok(key) = load_key(provider.keys, provider.name) else {
+            continue;
+        };
+        for model in provider.text {
+            match chat_plain(provider.url, &key, model, &system, text, provider.name) {
+                Ok(reply) if !reply.trim().is_empty() => return Ok(reply.trim().to_string()),
+                Ok(_) => last = format!("{model} returned nothing."),
+                Err(err) => {
+                    eprintln!("[nim] translate {} {model}: {err}", provider.name);
+                    last = err;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// A plain chat round-trip with no JSON contract, for small side tasks.
+fn chat_plain(
+    url: &str,
+    key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    provider: &'static str,
+) -> Result<String, String> {
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 400,
+        "stream": false
+    });
+    let body = post_json(url, &payload, key, provider)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).map_err(|err| format!("Bad provider JSON: {err}"))?;
+    parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|text| strip_think(text).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "The model returned an empty translation.".to_string())
+}
+
 /// Say out loud that this is a continuation.
 ///
 /// Replaying the earlier messages is not enough on its own: with a fresh
@@ -383,19 +460,34 @@ pub fn ask_screen(
     Err(format!("No configured model answered. {last}"))
 }
 
-pub fn transcribe_wav(wav: &[u8]) -> Result<String, String> {
+/// Speech to English text.
+///
+/// `language` is what the user said they speak. English goes through plain
+/// transcription; anything else goes through Whisper's translation endpoint, so
+/// the rest of the pipeline — the vision prompt, the answer, the history — stays
+/// in one language regardless of who is talking.
+pub fn transcribe_wav(wav: &[u8], language: &str) -> Result<String, String> {
     if wav.len() < 64 {
         return Err("Nothing to transcribe.".into());
     }
+    let translating = !language.trim().eq_ignore_ascii_case("en");
 
     let mut last = "No speech model answered.".to_string();
     for provider in STT_PROVIDERS {
+        let (url, models) = if translating {
+            match provider.translate_url {
+                Some(url) => (url, provider.translate_models),
+                None => continue,
+            }
+        } else {
+            (provider.url, provider.models)
+        };
         let key = match load_key(provider.keys, provider.name) {
             Ok(key) => key,
             Err(_) => continue,
         };
-        for model in provider.models {
-            match transcribe_once(client(), provider.url, &key, model, wav) {
+        for model in models {
+            match transcribe_once(client(), url, &key, model, wav, translating) {
                 Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_string()),
                 Ok(_) => last = format!("{model} returned empty text."),
                 Err(err) => {
@@ -404,6 +496,11 @@ pub fn transcribe_wav(wav: &[u8]) -> Result<String, String> {
                 }
             }
         }
+    }
+    if translating {
+        return Err(format!(
+            "Could not translate speech. A Groq key is needed for languages other than English. {last}"
+        ));
     }
     Err(format!("Could not transcribe speech. {last}"))
 }
@@ -414,15 +511,20 @@ fn transcribe_once(
     key: &str,
     model: &str,
     wav: &[u8],
+    translating: bool,
 ) -> Result<String, String> {
     let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
         .file_name("speech.wav")
         .mime_str("audio/wav")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::blocking::multipart::Form::new()
-        .text("model", model.to_string())
-        .text("language", "en")
-        .part("file", part);
+    let mut form = reqwest::blocking::multipart::Form::new().text("model", model.to_string());
+    // The translation endpoint detects the source language itself and rejects a
+    // `language` field; pinning it to "en" is what made Spanish and Hindi come
+    // back as English-sounding nonsense.
+    if !translating {
+        form = form.text("language", "en");
+    }
+    let form = form.part("file", part);
 
     let response = client
         .post(url)

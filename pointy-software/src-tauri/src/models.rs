@@ -170,6 +170,109 @@ pub fn ensure_release_assets(app: &AppHandle) {
         .ok();
 }
 
+/// Is this language ready to be spoken? English always is: its voice is part of
+/// the mandatory set, so it never needs downloading.
+pub fn voice_installed(code: &str) -> bool {
+    let language = crate::lang::resolve(Some(code));
+    let (Some(voice), Some(_)) = (language.voice, language.voice_url) else {
+        return true;
+    };
+    // The config sits beside the model and is tiny; both must be present or
+    // Piper will start and then fail on a missing phoneme map.
+    root().join(voice).exists() && root().join(format!("{voice}.json")).exists()
+}
+
+/// Absolute path of a language's voice, once installed.
+pub fn voice_path(code: &str) -> Option<PathBuf> {
+    let language = crate::lang::resolve(Some(code));
+    let voice = language.voice?;
+    voice_installed(code).then(|| root().join(voice))
+}
+
+/// Which languages are downloaded, for the settings list.
+pub fn voice_status() -> Vec<(String, bool)> {
+    crate::lang::LANGUAGES
+        .iter()
+        .map(|language| (language.code.to_string(), voice_installed(language.code)))
+        .collect()
+}
+
+/// Fetch one language's voice in the background, reporting progress on
+/// `models://voice`. Downloading an already-installed language is a no-op, so
+/// the settings button is safe to press twice.
+pub fn download_voice(app: &AppHandle, code: &str) {
+    let language = crate::lang::resolve(Some(code));
+    let code = language.code.to_string();
+    if voice_installed(&code) {
+        emit_voice(app, &code, "ready", None);
+        return;
+    }
+    let (Some(voice), Some(voice_url), Some(config_url)) =
+        (language.voice, language.voice_url, language.config_url)
+    else {
+        emit_voice(app, &code, "ready", None);
+        return;
+    };
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("pointy-voice-download".into())
+        .spawn(move || {
+            emit_voice(&app, &code, "downloading", None);
+            let model = root().join(voice);
+            let config = root().join(format!("{voice}.json"));
+            // The model is tens of megabytes and the config a few kilobytes;
+            // a partial pair is worse than none, so a failed half is removed.
+            let outcome = fetch(voice_url, &model, 1024 * 1024)
+                .and_then(|_| fetch(config_url, &config, 64));
+            match outcome {
+                Ok(()) => emit_voice(&app, &code, "ready", None),
+                Err(err) => {
+                    let _ = std::fs::remove_file(&model);
+                    let _ = std::fs::remove_file(&config);
+                    emit_voice(&app, &code, "error", Some(err));
+                }
+            }
+        })
+        .ok();
+}
+
+fn emit_voice(app: &AppHandle, code: &str, phase: &str, error: Option<String>) {
+    let _ = app.emit(
+        "models://voice",
+        ModelProgress {
+            phase: phase.into(),
+            asset: code.into(),
+            downloaded: 0,
+            total: None,
+            ready: phase == "ready",
+            error,
+        },
+    );
+}
+
+/// Download to a temporary file and move it into place only once it is whole,
+/// so an interrupted download can never look like an installed voice.
+fn fetch(source: &str, target: &Path, min_bytes: u64) -> Result<(), String> {
+    let temp = target.with_extension("part");
+    let _ = std::fs::remove_file(&temp);
+    let response = reqwest::blocking::Client::new()
+        .get(source)
+        .send()
+        .map_err(|err| format!("Could not reach the voice server: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Voice download failed: {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("Could not read the voice: {err}"))?;
+    if (bytes.len() as u64) < min_bytes {
+        return Err("The downloaded voice was incomplete.".into());
+    }
+    std::fs::write(&temp, &bytes).map_err(|err| format!("Could not save the voice: {err}"))?;
+    std::fs::rename(&temp, target).map_err(|err| format!("Could not install the voice: {err}"))
+}
+
 fn download(app: &AppHandle, name: &str, source: &str, target: &Path) -> Result<(), String> {
     let temp = target.with_extension("download");
     let _ = std::fs::remove_file(&temp);

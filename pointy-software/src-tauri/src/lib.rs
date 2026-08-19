@@ -17,6 +17,7 @@ mod events;
 mod guide;
 mod hotkey;
 mod keyboard;
+mod lang;
 mod keys;
 mod misclick;
 mod models;
@@ -390,8 +391,10 @@ fn locate_window(window_id: Option<u32>) -> Option<u32> {
 }
 
 #[tauri::command]
-async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
+async fn transcribe_wav(app: AppHandle, wav_base64: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let chosen = settings::load(&app).voice_language;
+        let language = lang::resolve(chosen.as_deref());
         let raw = wav_base64
             .split_once(',')
             .map(|(_, rest)| rest.to_string())
@@ -399,7 +402,7 @@ async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(raw.trim())
             .map_err(|e| format!("Bad audio payload: {e}"))?;
-        nim::transcribe_wav(&bytes)
+        nim::transcribe_wav(&bytes, language.code)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -500,12 +503,61 @@ fn guide_repeat(app: AppHandle, state: State<'_, Pointy>) {
     state.guide.repeat(&app);
 }
 
-/// Speak text through the OS voice (fallback when the webview has no voices).
+/// Speak an answer aloud, in the language the user chose.
+///
+/// The text handed in is always English — that is what stays on screen. When the
+/// user speaks something else, it is translated here, just for the voice. Every
+/// step degrades to English rather than to silence: no voice downloaded, a failed
+/// translation, or a Piper failure all still say something useful.
 #[tauri::command]
-async fn speak(text: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || tts::speak(&text))
-        .await
-        .map_err(|e| e.to_string())?
+async fn speak(app: AppHandle, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = settings::load(&app).voice_language;
+        let language = lang::resolve(chosen.as_deref());
+        if !lang::needs_voice(language) {
+            return tts::speak(&text);
+        }
+        let Some(voice) = models::voice_path(language.code) else {
+            return tts::speak(&text);
+        };
+        let spoken = match nim::translate(&text, language.english) {
+            Ok(translated) => translated,
+            Err(err) => {
+                eprintln!("[tts] could not translate to {}: {err}", language.english);
+                return tts::speak(&text);
+            }
+        };
+        tts::speak_with(&spoken, Some(voice)).or_else(|err| {
+            eprintln!("[tts] {} voice failed: {err}", language.english);
+            tts::speak(&text)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The languages on offer, and which of them are ready to speak.
+#[tauri::command]
+fn languages() -> Vec<&'static lang::Language> {
+    lang::LANGUAGES.iter().collect()
+}
+
+#[tauri::command]
+fn voice_status() -> Vec<(String, bool)> {
+    models::voice_status()
+}
+
+#[tauri::command]
+fn voice_download(app: AppHandle, code: String) {
+    models::download_voice(&app, &code);
+}
+
+#[tauri::command]
+fn settings_set_language(app: AppHandle, code: String) -> Result<settings::Settings, String> {
+    let language = lang::resolve(Some(&code));
+    settings::update(&app, |settings| {
+        settings.voice_language = Some(language.code.to_string());
+    })
 }
 
 #[tauri::command]
@@ -599,6 +651,10 @@ pub fn run() {
             point_watch,
             point_unwatch,
             transcribe_wav,
+            languages,
+            voice_status,
+            voice_download,
+            settings_set_language,
             windows_list,
             window_focus,
             capture_scope,

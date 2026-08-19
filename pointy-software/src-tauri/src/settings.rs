@@ -14,6 +14,9 @@ pub struct Settings {
     pub hotkey: Option<Combo>,
     pub input_device: Option<String>,
     pub onboarding_complete: bool,
+    /// Language the user speaks and wants spoken back, as an ISO-639-1 code.
+    /// Absent means English, so existing settings files stay valid.
+    pub voice_language: Option<String>,
 }
 
 fn path(app: &AppHandle) -> Result<PathBuf, String> {

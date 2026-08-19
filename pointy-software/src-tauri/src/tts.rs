@@ -21,6 +21,16 @@ static PIPER_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 /// Piper executable/model is absent or fails. The function returns after audio is
 /// queued, not after the whole sentence has finished playing.
 pub fn speak(text: &str) -> Result<(), String> {
+    speak_with(text, None)
+}
+
+/// Speak using a specific Piper voice, for languages other than English.
+///
+/// The SAPI fallback is deliberately skipped when a voice was named: SAPI would
+/// read Hindi or Urdu words with an English voice and produce nonsense. Failing
+/// instead lets the caller fall back to the English text, which is at least
+/// intelligible.
+pub fn speak_with(text: &str, voice: Option<PathBuf>) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(());
@@ -28,8 +38,10 @@ pub fn speak(text: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        match speak_piper(text) {
+        let chosen = voice.is_some();
+        match speak_piper(text, voice) {
             Ok(()) => return Ok(()),
+            Err(err) if chosen => return Err(err),
             Err(err) => eprintln!("[tts] Piper unavailable: {err}; using SAPI fallback"),
         }
         speak_sapi(text)
@@ -37,13 +49,13 @@ pub fn speak(text: &str) -> Result<(), String> {
 
     #[cfg(not(windows))]
     {
-        let _ = text;
+        let _ = (text, voice);
         Err("Local Piper integration is currently implemented for Windows only.".into())
     }
 }
 
 #[cfg(windows)]
-fn speak_piper(text: &str) -> Result<(), String> {
+fn speak_piper(text: &str, voice: Option<PathBuf>) -> Result<(), String> {
     use std::io::Write;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -51,9 +63,13 @@ fn speak_piper(text: &str) -> Result<(), String> {
 
     let piper = crate::models::path("piper.exe")
         .ok_or_else(|| "piper.exe is not present in the model directory".to_string())?;
-    let voice = crate::models::path("en_US-lessac-medium.onnx")
-        .ok_or_else(|| "Piper voice model is not present".to_string())?;
-    let config = crate::models::path("en_US-lessac-medium.onnx.json");
+    let voice = match voice {
+        Some(path) => path,
+        None => crate::models::path("en_US-lessac-medium.onnx")
+            .ok_or_else(|| "Piper voice model is not present".to_string())?,
+    };
+    // Piper expects the config beside the model, named after it.
+    let config = Some(PathBuf::from(format!("{}.json", voice.display())));
     if !piper.exists() || !voice.exists() {
         return Err("Piper executable or voice model is missing".into());
     }

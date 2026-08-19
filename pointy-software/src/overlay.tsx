@@ -24,8 +24,15 @@ import {
   onPointClicked,
   pointUnwatch,
   pointWatch,
+  languages as listLanguages,
+  settingsGet,
+  settingsSetLanguage,
+  voiceStatus,
+  onVoiceProgress,
+  voiceDownload,
   type AppWindow,
   type GuideStep,
+  type Language,
 } from "@/lib/pointy";
 import {
   askAboutScreen,
@@ -73,6 +80,11 @@ export function Overlay() {
   const [pos, setPos] = useState(() => defaultPos());
   /** Answers are text first. Speech is opt-in, per answer or as an auto-read. */
   const [speak, setSpeak] = useState(false);
+  /** Spoken language. Answers stay in English on screen either way — this only
+   * decides how speech is understood and how it is read back. */
+  const [language, setLanguage] = useState("en");
+  const [languageList, setLanguageList] = useState<Language[]>([]);
+  const [voicesInstalled, setVoicesInstalled] = useState<Record<string, boolean>>({});
   const [guide, setGuide] = useState<{ active: boolean; task: string; step: number }>({
     active: false,
     task: "",
@@ -96,8 +108,39 @@ export function Overlay() {
    * cannot re-show the banner or speak after Stop. */
   const guideStoppedRef = useRef(false);
 
-  const voice = useOverlayVoice(listening, listenGen);
+  const voice = useOverlayVoice(listening, listenGen, language);
   const busy = turns.some((turn) => turn.status === "asking");
+
+  // Language choice lives in settings so it survives restarts, and voices can
+  // finish downloading from the dashboard while the overlay is open.
+  useEffect(() => {
+    const refreshVoices = async () => {
+      const status = await voiceStatus().catch(() => []);
+      setVoicesInstalled(Object.fromEntries(status));
+    };
+    void listLanguages().then(setLanguageList).catch(() => {});
+    void settingsGet()
+      .then((settings) => setLanguage(settings.voice_language ?? "en"))
+      .catch(() => {});
+    void refreshVoices();
+
+    let off: (() => void) | null = null;
+    let cancelled = false;
+    void onVoiceProgress(() => void refreshVoices()).then((unlisten) => {
+      if (cancelled) unlisten();
+      else off = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+
+  const changeLanguage = useCallback((code: string) => {
+    setLanguage(code);
+    void settingsSetLanguage(code).catch(() => {});
+    void voiceDownload(code).catch(() => {});
+  }, []);
 
   const posRef = useRef(pos);
   posRef.current = pos;
@@ -790,6 +833,10 @@ export function Overlay() {
                 onListen={listen}
                 speakEnabled={speak}
                 onToggleSpeak={() => setSpeak((s) => !s)}
+                languages={languageList}
+                language={language}
+                voicesInstalled={voicesInstalled}
+                onLanguageChange={changeLanguage}
                 guideActive={guide.active}
                 guidePhase={guidePhase}
                 guideStep={guideStep}

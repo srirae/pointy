@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Keyboard, Mic, RotateCcw } from "lucide-react";
 import { motion } from "motion/react";
 
+import { VoiceLanguages } from "@/components/dashboard/voice-languages";
 import { HotkeyCombo } from "@/components/hotkey-combo";
 import { Atmosphere } from "@/components/onboarding/atmosphere";
 import { HotkeyCaptureInput } from "@/components/onboarding/hotkey-capture-input";
@@ -142,6 +143,8 @@ export function Dashboard({
             error={held ? micError : null}
           />
         </motion.section>
+
+        <VoiceLanguages />
       </main>
     </div>
   );

@@ -65,6 +65,16 @@ export interface Settings {
   hotkey: Combo | null;
   input_device: string | null;
   onboarding_complete: boolean;
+  /** ISO-639-1 code the user speaks; null means English. */
+  voice_language: string | null;
+}
+
+export interface Language {
+  code: string;
+  english: string;
+  native: string;
+  /** Null for English, whose voice ships with the app. */
+  voice: string | null;
 }
 
 export interface ClickTarget {
@@ -201,6 +211,14 @@ function previewPermissions(overrides?: Partial<Record<PermissionId, PermissionS
 }
 
 /** In-memory preview state so Allow / Continue work without Rust. */
+/** Mirrors the Rust catalogue so the browser preview renders the real picker. */
+const PREVIEW_LANGUAGES: Language[] = [
+  { code: "en", english: "English", native: "English", voice: null },
+  { code: "es", english: "Spanish", native: "Español", voice: "es_ES-davefx-medium.onnx" },
+  { code: "hi", english: "Hindi", native: "हिन्दी", voice: "hi_IN-pratham-medium.onnx" },
+  { code: "ur", english: "Urdu", native: "اردو", voice: "ur_PK-fasih-medium.onnx" },
+];
+
 const preview: {
   permissions: PermissionStatus[];
   settings: Settings;
@@ -210,6 +228,7 @@ const preview: {
     hotkey: null,
     input_device: "Default Microphone",
     onboarding_complete: false,
+    voice_language: null,
   },
 };
 
@@ -279,11 +298,24 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
       return [] as T;
     case "models_ready":
       return true as T;
+    case "languages":
+      return PREVIEW_LANGUAGES as T;
+    case "voice_status":
+      return PREVIEW_LANGUAGES.map((language) => [language.code, !language.voice]) as T;
+    case "voice_download":
+      return undefined as T;
+    case "settings_set_language":
+      preview.settings = {
+        ...preview.settings,
+        voice_language: (args?.code as string) ?? null,
+      };
+      return { ...preview.settings } as T;
     case "settings_reset":
       preview.settings = {
         hotkey: null,
         input_device: "Default Microphone",
         onboarding_complete: false,
+        voice_language: null,
       };
       return { ...preview.settings } as T;
     case "hotkey_clear":
@@ -402,6 +434,16 @@ export const settingsReset = () => invoke<Settings>("settings_reset");
 export const modelsStatus = () => invoke<[string, boolean][]>("models_status");
 export const modelsReady = () => invoke<boolean>("models_ready");
 export const hotkeyClear = () => invoke<void>("hotkey_clear");
+
+// speech languages
+export const languages = () => invoke<Language[]>("languages");
+export const settingsSetLanguage = (code: string) =>
+  invoke<Settings>("settings_set_language", { code });
+/** Which languages have their voice downloaded, as [code, installed] pairs. */
+export const voiceStatus = () => invoke<[string, boolean][]>("voice_status");
+export const voiceDownload = (code: string) => invoke<void>("voice_download", { code });
+export const onVoiceProgress = (cb: (progress: ModelProgress) => void): Promise<UnlistenFn> =>
+  listen<ModelProgress>("models://voice", (event) => cb(event.payload));
 
 // overlay
 export const overlaySetEnabled = (enabled: boolean) =>

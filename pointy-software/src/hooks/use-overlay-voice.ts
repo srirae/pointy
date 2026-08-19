@@ -25,7 +25,7 @@ function recognitionCtor(): SpeechCtor | null {
  * The overlay webview stays mounted for the process lifetime. `active` must be false
  * until the hotkey goes down, or this hook records the room in the background.
  */
-export function useOverlayVoice(active: boolean, generation = 0) {
+export function useOverlayVoice(active: boolean, generation = 0, language = "en") {
   const [bands, setBands] = useState<number[]>(SILENT);
   const [level, setLevel] = useState(0);
   const [transcript, setTranscript] = useState("");
@@ -58,6 +58,7 @@ export function useOverlayVoice(active: boolean, generation = 0) {
       return;
     }
 
+    const english = language === "en";
     const session = generation || ++sessionRef.current;
     sessionRef.current = session;
     setTranscript("");
@@ -140,7 +141,12 @@ export function useOverlayVoice(active: boolean, generation = 0) {
         };
         tick();
 
-        const Ctor = recognitionCtor();
+        // The browser recognizer could transcribe Spanish or Hindi, but it can
+        // only ever return the same language it heard. Pointy needs English, so
+        // for anything else we skip it and let the WAV go to Whisper's
+        // translation endpoint instead. That is a deliberate choice, not a
+        // missing capability, so `supported` stays true.
+        const Ctor = english ? recognitionCtor() : null;
         if (Ctor) {
           rec = new Ctor();
           rec.continuous = true;
@@ -167,7 +173,7 @@ export function useOverlayVoice(active: boolean, generation = 0) {
             setSupported(false);
           }
         } else {
-          setSupported(false);
+          setSupported(!english);
         }
       } catch (reason) {
         if (!cancelled) {
@@ -215,7 +221,7 @@ export function useOverlayVoice(active: boolean, generation = 0) {
       stream?.getTracks().forEach((track) => track.stop());
       void audioCtx?.close();
     };
-  }, [active, generation]);
+  }, [active, generation, language]);
 
   return {
     bands,

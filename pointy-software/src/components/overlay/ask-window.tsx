@@ -24,9 +24,10 @@ import { motion } from "motion/react";
 
 import { AnswerMarkdown } from "@/components/overlay/answer-markdown";
 import { AppPicker } from "@/components/overlay/app-picker";
+import { LanguagePicker } from "@/components/overlay/language-picker";
 import { Thinking } from "@/components/overlay/thinking";
 import { PointyMark } from "@/components/pointy-mark";
-import type { AppWindow, ClickTarget, DotPoint, GuideStep } from "@/lib/pointy";
+import type { AppWindow, ClickTarget, DotPoint, GuideStep, Language } from "@/lib/pointy";
 
 export type TurnStatus = "asking" | "done" | "stopped" | "error";
 
@@ -81,6 +82,10 @@ export function AskWindow({
   onListen,
   speakEnabled,
   onToggleSpeak,
+  languages,
+  language,
+  voicesInstalled,
+  onLanguageChange,
   guideActive,
   guidePhase,
   guideStep,
@@ -121,6 +126,12 @@ export function AskWindow({
   onListen: (turn: Turn) => void;
   speakEnabled: boolean;
   onToggleSpeak: () => void;
+  languages: Language[];
+  /** ISO-639-1 code the user speaks. */
+  language: string;
+  /** Which languages have a downloaded voice, keyed by code. */
+  voicesInstalled: Record<string, boolean>;
+  onLanguageChange: (code: string) => void;
   guideActive: boolean;
   guidePhase: string;
   guideStep: GuideStep | null;
@@ -222,6 +233,12 @@ export function AskWindow({
               ? { duration: 1.1, repeat: Infinity, ease: "easeInOut" }
               : { duration: 0.2 }
           }
+        />
+        <LanguagePicker
+          languages={languages}
+          value={language}
+          installed={voicesInstalled}
+          onChange={onLanguageChange}
         />
         <button
           type="button"
