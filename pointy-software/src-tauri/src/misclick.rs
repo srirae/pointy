@@ -6,9 +6,10 @@
 //! (`uia::confusion_zones`). Nothing in the reactive loop touches the network
 //! or an AI model:
 //!
-//! * the warning audio is pre-cached once (`tts::warm_warning`) and played with
-//!   `PlaySoundW` + `SND_ASYNC`, which starts in microseconds, and
 //! * the correct target's dot is brightened through a `guide://warn` event.
+//!
+//! There is no audible warning: a spoken "not that one" fired on too many false
+//! positives, so the watcher only nudges visually now.
 //!
 //! A warning fires only when the cursor has (a) newly entered a confusion zone,
 //! (b) dwelled there continuously past ~200ms, and (c) slowed to a fraction of
@@ -44,12 +45,11 @@ const MAX_ZONES: usize = 6;
 /// Speed samples kept to smooth jitter (8ms apart → ~a quarter second).
 const SAMPLE_WINDOW: usize = 32;
 
-/// Payload of the `guide://warn` event: which zone was entered and what was
-/// said, so the frontend can brighten the correct dot.
+/// Payload of the `guide://warn` event: which zone was entered, so the
+/// frontend can brighten the correct dot.
 #[derive(Debug, Clone, Serialize)]
 pub struct WarnPayload {
     pub zone: String,
-    pub say: String,
 }
 
 /// Handle to a running watcher. Dropping it (or calling `stop`) ends the cursor
@@ -87,9 +87,8 @@ pub fn start(app: AppHandle, window_id: u32, target: DotPoint) -> Watcher {
 }
 
 fn run(app: AppHandle, window_id: u32, target: DotPoint, stop: Arc<AtomicBool>) {
-    // Setup phase (not the reactive loop): synthesize the warning once and
-    // gather the nearby interactive controls from the accessibility tree.
-    crate::tts::warm_warning();
+    // Setup phase (not the reactive loop): gather the nearby interactive
+    // controls from the accessibility tree.
     let zones = crate::uia::confusion_zones(window_id, &target, RADIUS_PX, MAX_ZONES);
     if zones.is_empty() {
         return; // nothing plausible to confuse — nothing to guard
@@ -160,15 +159,10 @@ impl WatcherCore {
         // Cursor on the real target: cancel every pending warning immediately.
         if point_in_rect(x, y, self.target.raw_x, self.target.raw_y, self.target.raw_w, self.target.raw_h)
         {
-            let mut cancelled = false;
             for state in &mut self.states {
                 if state.inside || state.entered_at.is_some() {
                     *state = ZoneState::new();
-                    cancelled = true;
                 }
-            }
-            if cancelled {
-                crate::tts::stop_warning();
             }
             return None;
         }
@@ -209,24 +203,19 @@ impl WatcherCore {
 }
 
 fn trigger(app: &AppHandle, zone: &Zone, dwell: Duration, approach: f64, current: f64) {
-    let t0 = Instant::now();
-    let _ = crate::tts::play_warning();
-    let audio_ms = t0.elapsed().as_millis();
     let _ = app.emit(
         "guide://warn",
         WarnPayload {
             zone: zone.label.clone(),
-            say: crate::tts::WARNING_TEXT.to_string(),
         },
     );
     eprintln!(
-        "MISCLICK: zone={:?} dwell_ms={} approach_px_s={:.0} current_px_s={:.0} velocity_drop={:.2} trigger_to_audio_ms={}",
+        "MISCLICK: zone={:?} dwell_ms={} approach_px_s={:.0} current_px_s={:.0} velocity_drop={:.2}",
         zone.label,
         dwell.as_millis(),
         approach,
         current,
         (approach - current) / approach.max(1.0),
-        audio_ms,
     );
 }
 

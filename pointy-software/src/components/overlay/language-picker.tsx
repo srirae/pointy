@@ -16,14 +16,22 @@ export function LanguagePicker({
   value,
   installed,
   onChange,
+  onOpenChange,
 }: {
   languages: Language[];
   value: string;
   installed: Record<string, boolean>;
   onChange: (code: string) => void;
+  /** The dropdown overflows the card, so the overlay must stay clickable while it is open. */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    onOpenChange?.(open);
+    return () => onOpenChange?.(false);
+  }, [open, onOpenChange]);
 
   useEffect(() => {
     if (!open) return;

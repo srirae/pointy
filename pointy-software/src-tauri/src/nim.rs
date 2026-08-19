@@ -32,17 +32,6 @@ struct Provider {
 
 const PROVIDERS: &[Provider] = &[
     Provider {
-        name: "groq",
-        url: "https://api.groq.com/openai/v1/chat/completions",
-        keys: &["GROQ_API_KEY"],
-        vision: &["qwen/qwen3.6-27b"],
-        text: &["llama-3.3-70b-versatile"],
-        // qwen3.6's thinking mode makes Groq's json_object validation fail with
-        // a 400; the parser handles plain JSON text anyway, so don't force it.
-        json_mode: false,
-        no_think: true,
-    },
-    Provider {
         name: "gemini",
         url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         keys: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -97,47 +86,6 @@ fn mark_cooldown(name: &'static str) {
         .get_or_insert_with(HashMap::new)
         .insert(name, Instant::now() + Duration::from_secs(8));
 }
-
-/// Free-tier speech-to-text providers, tried fastest-first. Groq's Whisper is
-/// free and fast; NVIDIA remains a fallback for users who already have that key.
-struct SttProvider {
-    name: &'static str,
-    url: &'static str,
-    keys: &'static [&'static str],
-    models: &'static [&'static str],
-    /// Whisper's speech-to-English endpoint. Distinct from transcription: it
-    /// auto-detects the spoken language and returns English, which is exactly
-    /// what the vision model downstream needs. None means the provider cannot
-    /// translate and is skipped for non-English speech.
-    translate_url: Option<&'static str>,
-    /// Only full Whisper is documented as supporting translation, so the turbo
-    /// model is deliberately absent here even though it leads for transcription.
-    translate_models: &'static [&'static str],
-}
-
-const STT_PROVIDERS: &[SttProvider] = &[
-    SttProvider {
-        name: "groq",
-        url: "https://api.groq.com/openai/v1/audio/transcriptions",
-        keys: &["GROQ_API_KEY"],
-        models: &["whisper-large-v3-turbo", "whisper-large-v3"],
-        translate_url: Some("https://api.groq.com/openai/v1/audio/translations"),
-        translate_models: &["whisper-large-v3"],
-    },
-    SttProvider {
-        name: "nvidia",
-        url: "https://integrate.api.nvidia.com/v1/audio/transcriptions",
-        keys: &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
-        models: &[
-            "openai/whisper-large-v3",
-            "nvidia/whisper-large-v3",
-            "nvidia/parakeet-tdt-0.6b-v2",
-        ],
-        translate_url: None,
-        translate_models: &[],
-    },
-];
-
 /// One shared client so each question reuses the TLS connection instead of
 /// paying a fresh handshake per request.
 fn client() -> &'static reqwest::blocking::Client {
@@ -457,95 +405,86 @@ pub fn ask_screen(
             }
         }
     }
-    Err(format!("No configured model answered. {last}"))
+    // Every provider failed (transport error or an unreadable answer). Give a
+    // gentle, actionable reply rather than surfacing provider plumbing.
+    eprintln!("[nim] all providers failed for \"{trimmed}\": {last}");
+    Ok(NimReply {
+        answer: "I can see the screen, but I could not read a clear answer. Ask again in a few words.".into(),
+        advice: String::new(),
+        multi_step: false,
+        action: "unknown".into(),
+        confidence: 0.0,
+        target: None,
+    })
 }
 
 /// Speech to English text.
 ///
 /// `language` is what the user said they speak. English goes through plain
-/// transcription; anything else goes through Whisper's translation endpoint, so
-/// the rest of the pipeline — the vision prompt, the answer, the history — stays
-/// in one language regardless of who is talking.
+/// transcription. Non-English goes through Deepgram transcription then LLM translation.
 pub fn transcribe_wav(wav: &[u8], language: &str) -> Result<String, String> {
     if wav.len() < 64 {
-        return Err("Nothing to transcribe.".into());
+        return Err("I didn't hear anything — hold the key while you speak.".into());
     }
-    let translating = !language.trim().eq_ignore_ascii_case("en");
+    
+    let key = load_key(&["DEEPGRAM_API_KEY"], "deepgram")?;
 
-    let mut last = "No speech model answered.".to_string();
-    for provider in STT_PROVIDERS {
-        let (url, models) = if translating {
-            match provider.translate_url {
-                Some(url) => (url, provider.translate_models),
-                None => continue,
-            }
-        } else {
-            (provider.url, provider.models)
-        };
-        let key = match load_key(provider.keys, provider.name) {
-            Ok(key) => key,
-            Err(_) => continue,
-        };
-        for model in models {
-            match transcribe_once(client(), url, &key, model, wav, translating) {
-                Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_string()),
-                Ok(_) => last = format!("{model} returned empty text."),
+    let is_english = language.trim().eq_ignore_ascii_case("en");
+    let language_param = if is_english { "en" } else { language.trim() };
+    
+    // nova-3 supports Arabic, Hindi and Spanish (nova-2 does not), so it is the
+    // only model that covers every language Pointy offers.
+    let url = format!("https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language={}", language_param);
+    
+    let response = client()
+        .post(&url)
+        .header("Authorization", format!("Token {}", key))
+        .header("Content-Type", "audio/wav")
+        .body(wav.to_vec())
+        .send()
+        .map_err(|e| format!("Deepgram Network error: {e}"))?;
+
+    let status = response.status();
+    let body = response.text().map_err(|e| e.to_string())?;
+    
+    if !status.is_success() {
+        return Err(format!("Deepgram {status}: {}", body.chars().take(180).collect::<String>()));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("Bad STT JSON: {e}"))?;
+    
+    let transcript = parsed["results"]["channels"][0]["alternatives"][0]["transcript"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "I didn't catch that — please say it again.".to_string())?;
+
+    if is_english {
+        return Ok(transcript);
+    }
+    
+    // Translate the transcript to English
+    translate_to_english(&transcript)
+}
+
+fn translate_to_english(text: &str) -> Result<String, String> {
+    let system = "Translate the following text to English. Reply with ONLY the English translation. No quotes, no notes.";
+    let mut last = "No model could translate that to English.".to_string();
+    for provider in PROVIDERS {
+        if in_cooldown(provider.name) { continue; }
+        let Ok(key) = load_key(provider.keys, provider.name) else { continue; };
+        for model in provider.text {
+            match chat_plain(provider.url, &key, model, system, text, provider.name) {
+                Ok(reply) if !reply.trim().is_empty() => return Ok(reply.trim().to_string()),
+                Ok(_) => last = format!("{model} returned nothing."),
                 Err(err) => {
-                    eprintln!("[nim] stt {} {model}: {err}", provider.name);
+                    eprintln!("[nim] translate_to_en {} {model}: {err}", provider.name);
                     last = err;
                 }
             }
         }
     }
-    if translating {
-        return Err(format!(
-            "Could not translate speech. A Groq key is needed for languages other than English. {last}"
-        ));
-    }
-    Err(format!("Could not transcribe speech. {last}"))
-}
-
-fn transcribe_once(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    key: &str,
-    model: &str,
-    wav: &[u8],
-    translating: bool,
-) -> Result<String, String> {
-    let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
-        .file_name("speech.wav")
-        .mime_str("audio/wav")
-        .map_err(|e| e.to_string())?;
-    let mut form = reqwest::blocking::multipart::Form::new().text("model", model.to_string());
-    // The translation endpoint detects the source language itself and rejects a
-    // `language` field; pinning it to "en" is what made Spanish and Hindi come
-    // back as English-sounding nonsense.
-    if !translating {
-        form = form.text("language", "en");
-    }
-    let form = form.part("file", part);
-
-    let response = client
-        .post(url)
-        .bearer_auth(key)
-        .multipart(form)
-        .send()
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    let status = response.status();
-    let body = response.text().map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(format!("{status}: {}", body.chars().take(180).collect::<String>()));
-    }
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("Bad STT JSON: {e}"))?;
-    parsed
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "STT response had no text.".into())
+    Err(last)
 }
 
 fn complete(
@@ -590,7 +529,7 @@ fn complete(
         "messages": messages,
         "temperature": 0.2,
         "top_p": 0.7,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "stream": false
     });
     if json_mode {
@@ -611,7 +550,7 @@ fn complete(
         .ok_or_else(|| "The model returned an empty answer.".to_string())?;
     let content = strip_think(raw);
 
-    Ok(parse_reply(&content, dims))
+    parse_reply(&content, dims)
 }
 
 fn anthropic_content(
@@ -700,7 +639,7 @@ fn complete_anthropic(
         "model": model,
         "system": SYSTEM,
         "messages": messages,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "temperature": 0.2,
         "stream": false
     });
@@ -713,7 +652,7 @@ fn complete_anthropic(
         .filter(|text| !text.is_empty())
         .ok_or_else(|| "Anthropic returned no text.".to_string())?;
     eprintln!("[nim] provider=anthropic model={model} served single-query");
-    Ok(parse_reply(&strip_think(raw), dims))
+    parse_reply(&strip_think(raw), dims)
 }
 
 /// Timestamps (epoch milliseconds) of one streamed model round-trip.
@@ -1132,7 +1071,7 @@ fn parse_guide(raw: &str, dims: Option<(u32, u32)>) -> GuideReply {
     }
 }
 
-fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
+fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> Result<NimReply, String> {
     let cleaned = raw
         .trim()
         .trim_start_matches("```json")
@@ -1156,7 +1095,7 @@ fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
                     .unwrap_or(""),
             );
             if !answer.is_empty() {
-                return NimReply {
+                return Ok(NimReply {
                     answer,
                     advice: if is_cta_advice(&advice) {
                         String::new()
@@ -1170,30 +1109,23 @@ fn parse_reply(raw: &str, dims: Option<(u32, u32)>) -> NimReply {
                     action: normalize_action(value.get("action")),
                     confidence: parse_confidence(value.get("confidence")),
                     target: parse_target(value.get("target"), dims),
-                };
+                });
             }
         }
     }
 
     let visible = scrub_visible(cleaned);
     if visible.is_empty() {
-        return NimReply {
-            answer: "I can see the screen, but I could not read a clear answer. Ask again in a few words.".into(),
-            advice: String::new(),
-            multi_step: false,
-            action: "unknown".into(),
-            confidence: 0.0,
-            target: None,
-        };
+        return Err("The model returned an unreadable answer.".to_string());
     }
-    NimReply {
+    Ok(NimReply {
         answer: visible,
         advice: String::new(),
         multi_step: false,
         action: "unknown".into(),
         confidence: 0.0,
         target: None,
-    }
+    })
 }
 
 fn parse_confidence(value: Option<&serde_json::Value>) -> f64 {
@@ -1382,7 +1314,7 @@ fn norm(value: f64, denom: f64) -> f64 {
     }
 }
 
-fn load_key(names: &[&str], provider: &str) -> Result<String, String> {
+pub fn load_key(names: &[&str], provider: &str) -> Result<String, String> {
     for name in names {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim();
@@ -1636,5 +1568,29 @@ mod tests {
             ),
             Some("Click Continue.".to_string())
         );
+    }
+
+    #[test]
+    fn truncated_provider_json_is_rejected_so_the_cascade_continues() {
+        // A thinking model hit max_tokens and cut the JSON off mid-way. This must
+        // be an error so ask_screen tries the next provider instead of showing
+        // the "could not read a clear answer" fallback.
+        let reply = parse_reply(
+            r#"{"answer":"Click the '+' button.","advice":"Type youtube.com.","multi_step":true"#,
+            Some((1280, 800)),
+        );
+        assert!(reply.is_err());
+    }
+
+    #[test]
+    fn valid_provider_json_parses_into_a_reply() {
+        let reply = parse_reply(
+            r#"{"answer":"Click Continue.","advice":"","multi_step":false,"action":"click","confidence":0.9,"target":{"label":"Continue","x":0.1,"y":0.2,"w":0.08,"h":0.04}}"#,
+            Some((1000, 800)),
+        )
+        .expect("valid JSON should parse");
+        assert_eq!(reply.answer, "Click Continue.");
+        assert_eq!(reply.action, "click");
+        assert_eq!(reply.target.as_ref().map(|t| t.label.as_str()), Some("Continue"));
     }
 }

@@ -180,10 +180,9 @@ export interface GuideStep {
   speak?: boolean;
 }
 
-/** One local misclick warning: which wrong zone was entered and what was said. */
+/** One local misclick warning: which wrong zone was entered (visual nudge only). */
 export interface GuideWarn {
   zone: string;
-  say: string;
 }
 
 /** Number of bars the backend analyses. Keep in sync with audio::BANDS. */
@@ -214,9 +213,8 @@ function previewPermissions(overrides?: Partial<Record<PermissionId, PermissionS
 /** Mirrors the Rust catalogue so the browser preview renders the real picker. */
 const PREVIEW_LANGUAGES: Language[] = [
   { code: "en", english: "English", native: "English", voice: null },
-  { code: "es", english: "Spanish", native: "Español", voice: "es_ES-davefx-medium.onnx" },
-  { code: "hi", english: "Hindi", native: "हिन्दी", voice: "hi_IN-pratham-medium.onnx" },
-  { code: "ur", english: "Urdu", native: "اردو", voice: "ur_PK-fasih-medium.onnx" },
+  { code: "es", english: "Spanish", native: "Español", voice: null },
+  { code: "hi", english: "Hindi", native: "हिन्दी", voice: null },
 ];
 
 const preview: {
@@ -512,6 +510,7 @@ export const guideStart = (
   firstLabel?: string | null,
   action?: string | null,
   confidence?: number | null,
+  voice = false,
 ) =>
   invoke<void>("guide_start", {
     task,
@@ -519,6 +518,7 @@ export const guideStart = (
     firstLabel: firstLabel ?? null,
     action: action ?? null,
     confidence: confidence ?? null,
+    voice,
   });
 export const guideStop = () => invoke<void>("guide_stop");
 export const guideRepeat = () => invoke<void>("guide_repeat");

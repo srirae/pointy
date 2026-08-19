@@ -83,6 +83,7 @@ impl GuideManager {
         first_label: Option<String>,
         first_action: Option<String>,
         first_confidence: Option<f64>,
+        voice: bool,
     ) {
         *self.task.lock().unwrap() = task.clone();
         self.active.store(true, Ordering::SeqCst);
@@ -95,6 +96,7 @@ impl GuideManager {
             first_label,
             first_action.unwrap_or_else(|| "unknown".to_string()),
             first_confidence.unwrap_or(0.0),
+            voice,
         );
     }
 
@@ -123,6 +125,7 @@ fn spawn(
     first_label: Option<String>,
     first_action: String,
     first_confidence: f64,
+    voice: bool,
 ) {
     std::thread::Builder::new()
         .name("pointy-guide".into())
@@ -258,20 +261,33 @@ fn spawn(
                 let sy = shot.y;
                 let sw = shot.w;
                 let sh = shot.h;
+                let chosen_lang = crate::settings::load(&app).voice_language;
+                let cb_lang = crate::lang::resolve(chosen_lang.as_deref());
+                
                 let cb = move |sentence: &str| {
                     if !cb_active.load(Ordering::SeqCst) {
                         return;
                     }
-                    // Synthesize the first complete sentence locally while the
-                    // model is still streaming. `speak` returns once Piper has
-                    // queued audio, so T6 measures actual audio start rather
-                    // than merely the arrival of a text token.
-                    let _ = crate::tts::speak(sentence);
-                    if !cb_active.load(Ordering::SeqCst) {
-                        return;
+
+                    // Only a voice-initiated walkthrough speaks as it goes. A
+                    // typed task stays text until the user presses Listen (or
+                    // turns on auto-read in the header).
+                    if voice {
+                        let spoken = if cb_lang.code == "en" {
+                            sentence.to_string()
+                        } else {
+                            crate::nim::translate(sentence, cb_lang.english)
+                                .unwrap_or_else(|_| sentence.to_string())
+                        };
+
+                        let _ = crate::tts::speak_with(&spoken, Some(cb_lang.voice_id));
+
+                        if !cb_active.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        spoke_first.store(true, Ordering::SeqCst);
+                        *cb_t6.lock().unwrap() = Some(crate::events::now_millis());
                     }
-                    spoke_first.store(true, Ordering::SeqCst);
-                    *cb_t6.lock().unwrap() = Some(crate::events::now_millis());
                     let event = GuideStep {
                         // Speech-only event: the webview keeps the current
                         // target/dot visible while the rest of the JSON streams.
@@ -284,7 +300,7 @@ fn spawn(
                         y: sy,
                         w: sw,
                         h: sh,
-                        // Piper already spoke this streaming sentence.
+                        // Cartesia already spoke this streaming sentence.
                         speak: false,
                     };
                     *stream_last.lock().unwrap() = Some(event.clone());

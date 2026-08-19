@@ -94,6 +94,9 @@ export function Overlay() {
   /** Timestamp of the last misclick warning, so the dot can flash briefly. */
   const [guideWarn, setGuideWarn] = useState<number | null>(null);
   const [guidePhase, setGuidePhase] = useState("waiting_for_action");
+  /** True while the language dropdown is open, so the overlay stays clickable
+   * and the menu (which overflows the card) can receive clicks. */
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -107,8 +110,10 @@ export function Overlay() {
   /** Set true when the user stops the walkthrough, so late backend events
    * cannot re-show the banner or speak after Stop. */
   const guideStoppedRef = useRef(false);
+  /** Whether the active walkthrough was started by voice, so its steps speak. */
+  const guideVoiceRef = useRef(false);
 
-  const voice = useOverlayVoice(listening, listenGen, language);
+  const voice = useOverlayVoice(listening, listenGen);
   const busy = turns.some((turn) => turn.status === "asking");
 
   // Language choice lives in settings so it survives restarts, and voices can
@@ -163,7 +168,7 @@ export function Overlay() {
 
   // Clicks land on the app underneath except over the card. Kept on while Pointy
   // is thinking, so the screen never freezes mid-answer.
-  const passthrough = open && !listening && !leaving;
+  const passthrough = open && !listening && !leaving && !menuOpen;
   useEffect(() => {
     void overlaySetPassthrough(passthrough);
   }, [passthrough]);
@@ -230,19 +235,20 @@ export function Overlay() {
     };
   }, []);
 
-  // All user-facing speech uses the local Piper-first Rust path. Keeping this
+  // All user-facing speech goes through the Rust Cartesia path. Keeping this
   // out of Web Speech avoids browser-dependent voices and duplicate playback.
   const speakAloud = useCallback((text: string) => {
     if (!text.trim()) return;
     void speakText(text);
   }, []);
 
-  // Auto-read is off by default: the answer is text, and speech is something the
-  // user asks for. When they do turn it on, only newly-finished turns are read.
+  // A spoken question is answered aloud by default; a typed question stays
+  // text-only unless the user turns auto-read on in the header. The Listen
+  // button still reads any answer manually.
   useEffect(() => {
-    if (!speak) return;
     for (const turn of turns) {
       if (turn.status !== "done" || !turn.answer || spokenIds.current.has(turn.id)) continue;
+      if (!turn.voice && !speak) continue;
       spokenIds.current.add(turn.id);
       const text = plainSpeech(turn.answer);
       if (!text) continue;
@@ -335,8 +341,8 @@ export function Overlay() {
     };
   }, []);
 
-  // Misclick warning: brighten the correct dot for a moment. Audio is played by
-  // the backend (pre-cached), so here we only drive the visual pulse.
+  // Misclick warning: brighten the correct dot for a moment. This is visual
+  // only — there is no audible "not that one" warning anymore.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
@@ -360,7 +366,8 @@ export function Overlay() {
   }, [guideWarn]);
 
   useEffect(() => {
-    if (!guideStep || !speak || guideStep.speak === false) return;
+    if (!guideStep || guideStep.speak === false) return;
+    if (!speak && !guideVoiceRef.current) return;
     const text = plainSpeech(guideStep.say);
     if (!text) return;
     speakAloud(text);
@@ -386,6 +393,7 @@ export function Overlay() {
     hushSpeech();
     spokenIds.current.clear();
     guideStoppedRef.current = true;
+    guideVoiceRef.current = false;
     void guideStop();
     setGuide({ active: false, task: "", step: 1 });
     setGuideStep(null);
@@ -396,6 +404,7 @@ export function Overlay() {
     setPicking(false);
     setScope(null);
     setScopeChosen(false);
+    setMenuOpen(false);
     setTurns([]);
     setDraft("");
     setListening(false);
@@ -438,7 +447,8 @@ export function Overlay() {
 
   // ---------------------------------------------------------------- asking
 
-  const run = useCallback(async (turnId: number, question: string, app: AppWindow | null) => {
+  const run = useCallback(
+    async (turnId: number, question: string, app: AppWindow | null, byVoice = false) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -489,6 +499,7 @@ export function Overlay() {
       if (canStartGuide(reply)) {
         spokenIds.current.add(turnId); // the walkthrough speaks step one once
         guideStoppedRef.current = false;
+        guideVoiceRef.current = byVoice;
         setGuide({ active: true, task: question, step: 1 });
         setGuideStep({
           kind: "step",
@@ -510,6 +521,7 @@ export function Overlay() {
           reply.target?.label ?? null,
           reply.action,
           reply.confidence,
+          byVoice,
         );
       }
     } catch (reason) {
@@ -522,12 +534,15 @@ export function Overlay() {
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
     }
-  }, []);
+    },
+    [],
+  );
 
   const send = useCallback(async () => {
     if (live.current.busy || !live.current.scopeChosen) return;
 
-    const spoken = live.current.listening ? await stopListening() : live.current.draft;
+    const byVoice = live.current.listening;
+    const spoken = byVoice ? await stopListening() : live.current.draft;
     const question = (spoken || "").trim();
     if (!question) return;
 
@@ -536,9 +551,18 @@ export function Overlay() {
     setPoint(null);
     setTurns((current) => [
       ...current,
-      { id, question, answer: "", target: null, dot: null, status: "asking", error: null },
+      {
+        id,
+        question,
+        answer: "",
+        target: null,
+        dot: null,
+        status: "asking",
+        error: null,
+        voice: byVoice,
+      },
     ]);
-    void run(id, question, live.current.scope);
+    void run(id, question, live.current.scope, byVoice);
   }, [run, stopListening]);
 
   const stop = useCallback(() => {
@@ -568,7 +592,7 @@ export function Overlay() {
             : kept,
         ),
       );
-      void run(turn.id, turn.question, live.current.scope);
+      void run(turn.id, turn.question, live.current.scope, turn.voice);
     },
     [run],
   );
@@ -592,6 +616,7 @@ export function Overlay() {
 
   const stopGuide = useCallback(() => {
     guideStoppedRef.current = true;
+    guideVoiceRef.current = false;
     void guideStop();
     void stopSpeaking();
     setGuide((g) => ({ ...g, active: false }));
@@ -821,7 +846,7 @@ export function Overlay() {
                   if (listening) void stopListening();
                   else startListening();
                 }}
-                micError={listening ? voice.error : null}
+                micError={voice.error}
                 onEdit={edit}
                 onRetry={retry}
                 pointedTurn={point?.turnId ?? null}
@@ -837,6 +862,7 @@ export function Overlay() {
                 language={language}
                 voicesInstalled={voicesInstalled}
                 onLanguageChange={changeLanguage}
+                onMenuOpenChange={setMenuOpen}
                 guideActive={guide.active}
                 guidePhase={guidePhase}
                 guideStep={guideStep}

@@ -6,26 +6,14 @@ const SILENT = Array<number>(BAND_COUNT).fill(0);
 const TARGET_RATE = 16_000;
 const MAX_SECONDS = 20;
 
-type SpeechCtor = new () => SpeechRecognition;
-
-function recognitionCtor(): SpeechCtor | null {
-  if (typeof window === "undefined") return null;
-  const w = window as Window & {
-    SpeechRecognition?: SpeechCtor;
-    webkitSpeechRecognition?: SpeechCtor;
-  };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
-
 /**
- * Overlay-owned microphone: live levels, live speech-to-text, and a WAV of the hold
- * sent through cloud Whisper (Groq first, NVIDIA fallback) when the browser
- * recognizer is silent (WebView2).
+ * Overlay-owned microphone: live levels and a WAV of the hold sent to the Rust
+ * backend for Deepgram speech-to-text.
  *
  * The overlay webview stays mounted for the process lifetime. `active` must be false
  * until the hotkey goes down, or this hook records the room in the background.
  */
-export function useOverlayVoice(active: boolean, generation = 0, language = "en") {
+export function useOverlayVoice(active: boolean, generation = 0) {
   const [bands, setBands] = useState<number[]>(SILENT);
   const [level, setLevel] = useState(0);
   const [transcript, setTranscript] = useState("");
@@ -38,6 +26,7 @@ export function useOverlayVoice(active: boolean, generation = 0, language = "en"
   const flushRef = useRef<() => Promise<string>>(async () => "");
   const flushingRef = useRef(false);
   const sessionRef = useRef(0);
+  const finalizedRef = useRef(false);
 
   useEffect(() => {
     transcriptRef.current = transcript;
@@ -58,24 +47,21 @@ export function useOverlayVoice(active: boolean, generation = 0, language = "en"
       return;
     }
 
-    const english = language === "en";
     const session = generation || ++sessionRef.current;
     sessionRef.current = session;
     setTranscript("");
     transcriptRef.current = "";
     setError(null);
     chunksRef.current = [];
+    finalizedRef.current = false;
 
     let cancelled = false;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     let processor: ScriptProcessorNode | null = null;
-    let rec: SpeechRecognition | null = null;
     let raf = 0;
 
     const stopHardware = async () => {
-      rec?.stop();
-      rec = null;
       processor?.disconnect();
       processor = null;
       stream?.getTracks().forEach((track) => track.stop());
@@ -141,40 +127,10 @@ export function useOverlayVoice(active: boolean, generation = 0, language = "en"
         };
         tick();
 
-        // The browser recognizer could transcribe Spanish or Hindi, but it can
-        // only ever return the same language it heard. Pointy needs English, so
-        // for anything else we skip it and let the WAV go to Whisper's
-        // translation endpoint instead. That is a deliberate choice, not a
-        // missing capability, so `supported` stays true.
-        const Ctor = english ? recognitionCtor() : null;
-        if (Ctor) {
-          rec = new Ctor();
-          rec.continuous = true;
-          rec.interimResults = true;
-          rec.lang = "en-US";
-          rec.onresult = (event: SpeechRecognitionEvent) => {
-            if (sessionRef.current !== session) return;
-            let text = "";
-            for (let i = 0; i < event.results.length; i++) {
-              text += event.results[i]?.[0]?.transcript ?? "";
-            }
-            const next = text.trim();
-            transcriptRef.current = next;
-            setTranscript(next);
-          };
-          rec.onerror = (event: SpeechRecognitionErrorEvent) => {
-            if (event.error === "no-speech" || event.error === "aborted") return;
-            setError(event.message || event.error);
-          };
-          try {
-            rec.start();
-            setSupported(true);
-          } catch {
-            setSupported(false);
-          }
-        } else {
-          setSupported(!english);
-        }
+        // Always use the WAV -> Deepgram path. WebView2 does not have Chrome's
+        // cloud speech engine, so the browser SpeechRecognition API is silent
+        // inside Tauri. We collect raw PCM continuously and flush it at the end.
+        setSupported(true);
       } catch (reason) {
         if (!cancelled) {
           setError(String(reason));
@@ -183,8 +139,36 @@ export function useOverlayVoice(active: boolean, generation = 0, language = "en"
       }
     })();
 
+    // Live interim transcription: re-transcribe the audio captured so far every
+    // ~1.5s so the user sees their words appear while they are still speaking.
+    // Failures stay quiet here; the final flush surfaces any real error.
+    let interimInFlight = false;
+    const interimTimer = window.setInterval(async () => {
+      if (interimInFlight || cancelled || sessionRef.current !== session || finalizedRef.current) {
+        return;
+      }
+      const pcm = concat(chunksRef.current);
+      const rate = sampleRateRef.current;
+      if (pcm.length < rate * 0.6) return;
+
+      interimInFlight = true;
+      try {
+        const wav = encodeWav(pcm, rate, TARGET_RATE);
+        const text = (await transcribeWav(bytesToBase64(wav))).trim();
+        if (text && !cancelled && sessionRef.current === session && !finalizedRef.current) {
+          transcriptRef.current = text;
+          setTranscript(text);
+        }
+      } catch {
+        // Interim transcription is best-effort.
+      } finally {
+        interimInFlight = false;
+      }
+    }, 1500);
+
     flushRef.current = async () => {
       if (sessionRef.current !== session) return "";
+      finalizedRef.current = true;
       flushingRef.current = true;
       const live = transcriptRef.current.trim();
       const pcm = concat(chunksRef.current);
@@ -215,13 +199,13 @@ export function useOverlayVoice(active: boolean, generation = 0, language = "en"
 
     return () => {
       cancelled = true;
+      window.clearInterval(interimTimer);
       cancelAnimationFrame(raf);
-      rec?.abort();
       processor?.disconnect();
       stream?.getTracks().forEach((track) => track.stop());
       void audioCtx?.close();
     };
-  }, [active, generation, language]);
+  }, [active, generation]);
 
   return {
     bands,

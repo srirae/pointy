@@ -468,6 +468,7 @@ fn guide_start(
     first_label: Option<String>,
     action: Option<String>,
     confidence: Option<f64>,
+    voice: Option<bool>,
 ) -> Result<(), String> {
     let task = task.trim().to_string();
     if task.is_empty() {
@@ -482,9 +483,15 @@ fn guide_start(
     if confidence < 0.65 {
         return Err("The first step is not clear enough to guide safely yet.".into());
     }
-    state
-        .guide
-        .start(app, task, window_id, Some(label.to_string()), action, Some(confidence));
+    state.guide.start(
+        app,
+        task,
+        window_id,
+        Some(label.to_string()),
+        action,
+        Some(confidence),
+        voice.unwrap_or(false),
+    );
     Ok(())
 }
 
@@ -507,29 +514,29 @@ fn guide_repeat(app: AppHandle, state: State<'_, Pointy>) {
 ///
 /// The text handed in is always English — that is what stays on screen. When the
 /// user speaks something else, it is translated here, just for the voice. Every
-/// step degrades to English rather than to silence: no voice downloaded, a failed
-/// translation, or a Piper failure all still say something useful.
+/// step degrades to English rather than to silence: a failed translation or a
+/// Cartesia failure all still say something useful.
 #[tauri::command]
 async fn speak(app: AppHandle, text: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let chosen = settings::load(&app).voice_language;
         let language = lang::resolve(chosen.as_deref());
-        if !lang::needs_voice(language) {
-            return tts::speak(&text);
-        }
-        let Some(voice) = models::voice_path(language.code) else {
-            return tts::speak(&text);
-        };
-        let spoken = match nim::translate(&text, language.english) {
-            Ok(translated) => translated,
-            Err(err) => {
-                eprintln!("[tts] could not translate to {}: {err}", language.english);
-                return tts::speak(&text);
+        
+        let spoken = if language.code == "en" {
+            text.clone()
+        } else {
+            match nim::translate(&text, language.english) {
+                Ok(translated) => translated,
+                Err(err) => {
+                    eprintln!("[tts] could not translate to {}: {err}", language.english);
+                    text.clone()
+                }
             }
         };
-        tts::speak_with(&spoken, Some(voice)).or_else(|err| {
+
+        tts::speak_with(&spoken, Some(language.voice_id)).or_else(|err| {
             eprintln!("[tts] {} voice failed: {err}", language.english);
-            tts::speak(&text)
+            Err(err)
         })
     })
     .await

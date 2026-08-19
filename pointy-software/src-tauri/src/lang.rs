@@ -1,13 +1,6 @@
 //! The languages Pointy can listen in and speak back in.
 //!
-//! Speech-to-text is handled entirely by Whisper, which auto-detects the spoken
-//! language and can translate it to English, so the entry here carries no STT
-//! configuration. What each language *does* need is a local Piper voice, and
-//! those are large enough (~60MB) that they are downloaded only when someone
-//! actually chooses the language — see `models::download_voice`.
-//!
-//! English is the exception: its voice ships with the mandatory model set, so it
-//! is always available and never appears as a download.
+//! Speech-to-text is handled by Deepgram, and TTS by Cartesia.
 
 use serde::Serialize;
 
@@ -20,47 +13,34 @@ pub struct Language {
     pub english: &'static str,
     /// Name in its own script, for the picker.
     pub native: &'static str,
-    /// Piper voice filename, or None when the voice ships by default.
-    pub voice: Option<&'static str>,
-    pub voice_url: Option<&'static str>,
-    pub config_url: Option<&'static str>,
+    /// Cartesia Voice ID.
+    pub voice_id: &'static str,
 }
 
-/// Urdu lives only on the repository's `main` branch — it was added after the
-/// `v1.0.0` tag the English voice is pinned to — so its URLs differ in shape
-/// from the others on purpose.
 pub const LANGUAGES: &[Language] = &[
     Language {
         code: "en",
         english: "English",
         native: "English",
-        voice: None,
-        voice_url: None,
-        config_url: None,
+        voice_id: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", // Skylar
     },
     Language {
         code: "es",
         english: "Spanish",
         native: "Español",
-        voice: Some("es_ES-davefx-medium.onnx"),
-        voice_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx?download=true"),
-        config_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json?download=true"),
+        voice_id: "3597a26f-80ef-4bd5-8101-9699bc764917",
     },
     Language {
         code: "hi",
         english: "Hindi",
         native: "हिन्दी",
-        voice: Some("hi_IN-pratham-medium.onnx"),
-        voice_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx?download=true"),
-        config_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx.json?download=true"),
+        voice_id: "faf0731e-dfb9-4cfc-8119-259a79b27e12",
     },
     Language {
-        code: "ur",
-        english: "Urdu",
-        native: "اردو",
-        voice: Some("ur_PK-fasih-medium.onnx"),
-        voice_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/main/ur/ur_PK/fasih/medium/ur_PK-fasih-medium.onnx?download=true"),
-        config_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/main/ur/ur_PK/fasih/medium/ur_PK-fasih-medium.onnx.json?download=true"),
+        code: "ar",
+        english: "Arabic",
+        native: "العربية",
+        voice_id: "002622d8-19d0-4567-a16a-f99c7397c062",
     },
 ];
 
@@ -78,6 +58,6 @@ pub fn resolve(code: Option<&str>) -> &'static Language {
 }
 
 /// True when the language needs its own downloaded voice to be spoken.
-pub fn needs_voice(language: &Language) -> bool {
-    language.voice.is_some()
+pub fn needs_voice(_language: &Language) -> bool {
+    false // Remote TTS never needs a local voice download
 }

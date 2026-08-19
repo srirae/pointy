@@ -40,6 +40,8 @@ export type Turn = {
   dot: DotPoint | null;
   status: TurnStatus;
   error: string | null;
+  /** True when the question was spoken, so the answer is read aloud. */
+  voice: boolean;
 };
 
 const SPRING = { type: "spring", stiffness: 380, damping: 32 } as const;
@@ -86,6 +88,7 @@ export function AskWindow({
   language,
   voicesInstalled,
   onLanguageChange,
+  onMenuOpenChange,
   guideActive,
   guidePhase,
   guideStep,
@@ -132,6 +135,8 @@ export function AskWindow({
   /** Which languages have a downloaded voice, keyed by code. */
   voicesInstalled: Record<string, boolean>;
   onLanguageChange: (code: string) => void;
+  /** The language dropdown overflows the card, so the overlay must stay clickable while it is open. */
+  onMenuOpenChange?: (open: boolean) => void;
   guideActive: boolean;
   guidePhase: string;
   guideStep: GuideStep | null;
@@ -180,7 +185,7 @@ export function AskWindow({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.98 }}
       transition={SPRING}
-      className="flex w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-[1.35rem]"
+      className="flex w-[min(24rem,calc(100vw-2rem))] flex-col rounded-[1.35rem]"
       style={{
         background: "rgba(236, 239, 242, 0.9)",
         boxShadow: [
@@ -239,16 +244,17 @@ export function AskWindow({
           value={language}
           installed={voicesInstalled}
           onChange={onLanguageChange}
+          onOpenChange={onMenuOpenChange}
         />
         <button
           type="button"
           onClick={onToggleSpeak}
           onPointerDown={(event) => event.stopPropagation()}
-          aria-label={speakEnabled ? "Stop reading answers aloud" : "Read answers aloud automatically"}
+          aria-label={speakEnabled ? "Stop reading typed answers aloud" : "Read typed answers aloud too"}
           title={
             speakEnabled
-              ? "Answers are read aloud automatically"
-              : "Answers stay silent — use Listen on any answer"
+              ? "All answers are read aloud"
+              : "Voice questions are read aloud; typed answers stay silent unless you press Listen"
           }
           className="flex size-5 shrink-0 items-center justify-center rounded-full text-[#6b7785] transition-colors hover:bg-[#2e3a47]/10 hover:text-[#2e3a47]"
         >
