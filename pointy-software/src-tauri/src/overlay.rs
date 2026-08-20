@@ -20,7 +20,6 @@ use crate::Pointy;
 pub const LABEL: &str = "overlay";
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static OVERLAY_OWNED_MIC: AtomicBool = AtomicBool::new(false);
 /// Clicks and keys go to the app underneath, except over `HIT`.
 static PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 static LAST_IGNORE: AtomicBool = AtomicBool::new(false);
@@ -111,9 +110,11 @@ pub fn begin_listen(app: &AppHandle) {
     remember_foreground();
 
     if let Some(state) = app.try_state::<Pointy>() {
-        state.audio.stop_levels();
+        // Hand the device back early (a wedged previous session included);
+        // `audio_start_record` enforces exclusivity when the webview opens the
+        // dictation a beat later.
+        state.audio.release_all("overlay begin_listen");
     }
-    OVERLAY_OWNED_MIC.store(false, Ordering::SeqCst);
     show_fullscreen(app);
 }
 
@@ -184,15 +185,10 @@ fn conceal_for_capture(app: &AppHandle) {
     });
 }
 
-/// Hotkey went up: stop the microphone only if this overlay opened it.
-pub fn end_listen(app: &AppHandle) {
-    if !OVERLAY_OWNED_MIC.swap(false, Ordering::SeqCst) {
-        return;
-    }
-    if let Some(state) = app.try_state::<Pointy>() {
-        state.audio.stop_levels();
-    }
-}
+/// Hotkey went up. Nothing to do here: the overlay webview closes its own
+/// dictation (`audio_stop_record`) on the `hotkey://up` event, and if it never
+/// arrives the record-cap watchdog in the passthrough poll force-closes it.
+pub fn end_listen(_app: &AppHandle) {}
 
 /// Let the user keep working: clicks pass through except on the Guide-Dot / card.
 pub fn set_passthrough(app: &AppHandle, enabled: bool) {
@@ -242,10 +238,11 @@ pub fn hide(app: &AppHandle) {
     clear_hit();
     apply_ignore(app, false);
     if let Some(state) = app.try_state::<Pointy>() {
-        state.audio.stop_levels();
+        // Hide must always hand the device back, even if a dictation was left
+        // open by a wedged webview.
+        state.audio.release_all("overlay hidden");
         state.wake.clear();
     }
-    OVERLAY_OWNED_MIC.store(false, Ordering::SeqCst);
     let _ = app.emit("overlay://hidden", ());
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -330,18 +327,35 @@ fn start_passthrough_poll(app: &AppHandle) {
     let handle = app.clone();
     std::thread::Builder::new()
         .name("pointy-passthrough".into())
-        .spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(16));
-            if PASSTHROUGH.load(Ordering::SeqCst) {
-                let over_pill = cursor_over_hit(&handle);
-                apply_ignore(&handle, !over_pill);
-                continue;
-            }
-            // Exclusive: every click on every monitor is landing on Pointy. This
-            // is the only state that can make the machine feel frozen, so it is
-            // never allowed to outlive the thing that asked for it.
-            if let Some(reason) = overdue() {
-                rescue(&handle, reason);
+        .spawn(move || {
+            let mut mic_ticks = 0u32;
+            loop {
+                std::thread::sleep(Duration::from_millis(16));
+
+                // Mic watchdog: a dictation may never outlive the hard cap, even
+                // if the webview never releases it. Checked about once a second;
+                // the close is logged so the release is provable.
+                mic_ticks = mic_ticks.wrapping_add(1);
+                if mic_ticks % 62 == 0 {
+                    if let Some(state) = handle.try_state::<Pointy>() {
+                        if state.audio.record_cap_exceeded() {
+                            state.audio.force_stop_record();
+                            let _ = handle.emit("mic://stopped", "cap");
+                        }
+                    }
+                }
+
+                if PASSTHROUGH.load(Ordering::SeqCst) {
+                    let over_pill = cursor_over_hit(&handle);
+                    apply_ignore(&handle, !over_pill);
+                    continue;
+                }
+                // Exclusive: every click on every monitor is landing on Pointy. This
+                // is the only state that can make the machine feel frozen, so it is
+                // never allowed to outlive the thing that asked for it.
+                if let Some(reason) = overdue() {
+                    rescue(&handle, reason);
+                }
             }
         })
         .ok();

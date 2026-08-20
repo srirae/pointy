@@ -40,10 +40,11 @@ export function WakeSpeak({
   onFinish: () => void | Promise<void>;
 }) {
   const { held } = useHotkeyPress(true);
-  // The microphone opens with the step, not with the hold. Opening a WASAPI stream
-  // takes a moment, so starting it on key-down meant a short press showed flat bars and
-  // no error — indistinguishable from "Pointy cannot hear you".
-  const { bands, level, peak, openedDevice, error: micError } = useMicLevels(true);
+  // Listen-only: this step must not hold the device for its whole duration. The
+  // overlay opens the single capture stream on hotkey-down (audio.rs owns it), and
+  // the meter here rides the same `mic://level` events — the mic is free again the
+  // moment the hold ends.
+  const { bands, level, peak, openedDevice, error: micError } = useMicLevels(true, undefined, true);
 
   const [busy, setBusy] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);

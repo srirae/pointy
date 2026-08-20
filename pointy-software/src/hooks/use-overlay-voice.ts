@@ -1,17 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BAND_COUNT, transcribeWav } from "@/lib/pointy";
+import {
+  audioSnapshotRecord,
+  audioStartRecord,
+  audioStopRecord,
+  BAND_COUNT,
+  onMicError,
+  onMicLevel,
+  onMicStopped,
+  transcribeWav,
+} from "@/lib/pointy";
+import { isTauri } from "@/lib/tauri";
 
 const SILENT = Array<number>(BAND_COUNT).fill(0);
-const TARGET_RATE = 16_000;
-const MAX_SECONDS = 20;
+/** How often the interim transcript re-transcribes the audio captured so far. */
+const INTERIM_MS = 1500;
 
 /**
- * Overlay-owned microphone: live levels and a WAV of the hold sent to the Rust
- * backend for Deepgram speech-to-text.
+ * Overlay-owned voice session, recorded by Rust.
  *
- * The overlay webview stays mounted for the process lifetime. `active` must be false
- * until the hotkey goes down, or this hook records the room in the background.
+ * Rust owns the only microphone capture in the app (audio.rs). This hook never
+ * opens the device itself: `audio_start_record` starts the shared session, the
+ * band levels come from the same stream over `mic://level`, and the WAV for
+ * Deepgram is read back with `audio_snapshot_record` (interim) / `audio_stop_record`
+ * (final flush). Rust enforces a hard 30s cap and logs every open/close, so a
+ * missed hotkey-up or a hung flush can never hold the device indefinitely.
  */
 export function useOverlayVoice(active: boolean, generation = 0) {
   const [bands, setBands] = useState<number[]>(SILENT);
@@ -21,8 +34,6 @@ export function useOverlayVoice(active: boolean, generation = 0) {
   const [supported, setSupported] = useState(true);
 
   const transcriptRef = useRef("");
-  const chunksRef = useRef<Float32Array[]>([]);
-  const sampleRateRef = useRef(TARGET_RATE);
   const flushRef = useRef<() => Promise<string>>(async () => "");
   const flushingRef = useRef(false);
   const sessionRef = useRef(0);
@@ -32,18 +43,24 @@ export function useOverlayVoice(active: boolean, generation = 0) {
     transcriptRef.current = transcript;
   }, [transcript]);
 
+  /** Forget the last error once the user moves on (typing or a fresh session). */
+  const clearError = useCallback(() => setError(null), []);
+
   useEffect(() => {
     if (!active) {
       sessionRef.current += 1;
       if (!flushingRef.current) {
-        chunksRef.current = [];
         transcriptRef.current = "";
         setTranscript("");
         flushRef.current = async () => "";
       }
+      finalizedRef.current = true;
       setBands(SILENT);
       setLevel(0);
       setError(null);
+      // Safety: if a record session is somehow still open (e.g. the overlay
+      // reloaded mid-hold), hand the device back. Idempotent in Rust.
+      void audioStopRecord().catch(() => {});
       return;
     }
 
@@ -52,109 +69,66 @@ export function useOverlayVoice(active: boolean, generation = 0) {
     setTranscript("");
     transcriptRef.current = "";
     setError(null);
-    chunksRef.current = [];
     finalizedRef.current = false;
 
     let cancelled = false;
-    let stream: MediaStream | null = null;
-    let audioCtx: AudioContext | null = null;
-    let processor: ScriptProcessorNode | null = null;
-    let raf = 0;
-
-    const stopHardware = async () => {
-      processor?.disconnect();
-      processor = null;
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
-      if (audioCtx && audioCtx.state !== "closed") await audioCtx.close().catch(() => {});
-      audioCtx = null;
-    };
+    const unlisteners: Array<() => void> = [];
+    let interimInFlight = false;
 
     (async () => {
-      try {
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-          });
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 220));
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isTauri()) {
+        if (!cancelled) {
+          setError("Voice needs the desktop app.");
+          setSupported(false);
         }
+        return;
+      }
+      try {
+        await audioStartRecord();
         if (cancelled || sessionRef.current !== session) {
-          stream.getTracks().forEach((track) => track.stop());
+          await audioStopRecord().catch(() => {});
           return;
         }
-
-        audioCtx = new AudioContext();
-        if (audioCtx.state === "suspended") await audioCtx.resume();
-        sampleRateRef.current = audioCtx.sampleRate;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        source.connect(analyser);
-
-        processor = audioCtx.createScriptProcessor(4096, 1, 1);
-        processor.onaudioprocess = (event) => {
-          if (cancelled || sessionRef.current !== session) return;
-          const input = event.inputBuffer.getChannelData(0);
-          chunksRef.current.push(new Float32Array(input));
-          const maxSamples = sampleRateRef.current * MAX_SECONDS;
-          let total = chunksRef.current.reduce((sum, chunk) => sum + chunk.length, 0);
-          while (total > maxSamples && chunksRef.current.length > 1) {
-            const dropped = chunksRef.current.shift();
-            total -= dropped?.length ?? 0;
-          }
-        };
-        source.connect(processor);
-        const mute = audioCtx.createGain();
-        mute.gain.value = 0;
-        processor.connect(mute);
-        mute.connect(audioCtx.destination);
-
-        const freq = new Uint8Array(analyser.frequencyBinCount);
-        const tick = () => {
-          if (cancelled) return;
-          analyser.getByteFrequencyData(freq);
-          const slice = Math.max(1, Math.floor(freq.length / BAND_COUNT));
-          const nextBands = Array.from({ length: BAND_COUNT }, (_, i) => {
-            let sum = 0;
-            for (let j = 0; j < slice; j++) sum += freq[i * slice + j] ?? 0;
-            return sum / slice / 255;
-          });
-          setBands(nextBands);
-          setLevel(nextBands.reduce((a, b) => a + b, 0) / BAND_COUNT);
-          raf = requestAnimationFrame(tick);
-        };
-        tick();
-
-        // Always use the WAV -> Deepgram path. WebView2 does not have Chrome's
-        // cloud speech engine, so the browser SpeechRecognition API is silent
-        // inside Tauri. We collect raw PCM continuously and flush it at the end.
         setSupported(true);
       } catch (reason) {
         if (!cancelled) {
-          setError(String(reason));
+          setError(reason instanceof Error ? reason.message : String(reason));
           setSupported(false);
         }
       }
     })();
 
+    // Band levels come from the same Rust stream, so the bars move exactly in
+    // sync with what is being recorded.
+    void onMicLevel((next) => {
+      if (!cancelled && sessionRef.current === session) {
+        setBands(next.bands);
+        setLevel(next.level);
+      }
+    }).then((off) => (cancelled ? off() : unlisteners.push(off)));
+
+    void onMicError((reason) => {
+      if (!cancelled) setError(reason);
+    }).then((off) => (cancelled ? off() : unlisteners.push(off)));
+
+    // The backend force-closed the dictation (hard cap); the final flush will
+    // come back empty, so stop trying to read anything more.
+    void onMicStopped(() => {
+      if (sessionRef.current === session) finalizedRef.current = true;
+    }).then((off) => (cancelled ? off() : unlisteners.push(off)));
+
     // Live interim transcription: re-transcribe the audio captured so far every
     // ~1.5s so the user sees their words appear while they are still speaking.
     // Failures stay quiet here; the final flush surfaces any real error.
-    let interimInFlight = false;
     const interimTimer = window.setInterval(async () => {
       if (interimInFlight || cancelled || sessionRef.current !== session || finalizedRef.current) {
         return;
       }
-      const pcm = concat(chunksRef.current);
-      const rate = sampleRateRef.current;
-      if (pcm.length < rate * 0.6) return;
-
       interimInFlight = true;
       try {
-        const wav = encodeWav(pcm, rate, TARGET_RATE);
-        const text = (await transcribeWav(bytesToBase64(wav))).trim();
+        const wav = await audioSnapshotRecord();
+        if (!wav) return;
+        const text = (await transcribeWav(wav)).trim();
         if (text && !cancelled && sessionRef.current === session && !finalizedRef.current) {
           transcriptRef.current = text;
           setTranscript(text);
@@ -164,28 +138,16 @@ export function useOverlayVoice(active: boolean, generation = 0) {
       } finally {
         interimInFlight = false;
       }
-    }, 1500);
+    }, INTERIM_MS);
 
     flushRef.current = async () => {
       if (sessionRef.current !== session) return "";
       finalizedRef.current = true;
       flushingRef.current = true;
-      const live = transcriptRef.current.trim();
-      const pcm = concat(chunksRef.current);
-      const rate = sampleRateRef.current;
-      chunksRef.current = [];
-
-      await stopHardware();
-
-      flushingRef.current = false;
-      if (sessionRef.current !== session && !live && pcm.length === 0) return "";
-
-      if (live) return live;
-      if (pcm.length < rate * 0.25) return "";
-
-      const wav = encodeWav(pcm, rate, TARGET_RATE);
       try {
-        const text = (await transcribeWav(bytesToBase64(wav))).trim();
+        const wav = await audioStopRecord();
+        if (!wav) return "";
+        const text = (await transcribeWav(wav)).trim();
         if (text && sessionRef.current === session) {
           transcriptRef.current = text;
           setTranscript(text);
@@ -194,16 +156,18 @@ export function useOverlayVoice(active: boolean, generation = 0) {
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason));
         return "";
+      } finally {
+        flushingRef.current = false;
       }
     };
 
     return () => {
       cancelled = true;
       window.clearInterval(interimTimer);
-      cancelAnimationFrame(raf);
-      processor?.disconnect();
-      stream?.getTracks().forEach((track) => track.stop());
-      void audioCtx?.close();
+      unlisteners.forEach((off) => off());
+      // The final flush owns the close; only release here if the session ended
+      // some other way (webview reload / hide) and Rust still has the device.
+      if (!flushingRef.current && !finalizedRef.current) void audioStopRecord().catch(() => {});
     };
   }, [active, generation]);
 
@@ -213,70 +177,7 @@ export function useOverlayVoice(active: boolean, generation = 0) {
     transcript,
     error,
     supported,
+    clearError,
     flush: () => flushRef.current(),
   };
-}
-
-function concat(chunks: Float32Array[]) {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const out = new Float32Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-function downsample(input: Float32Array, fromRate: number, toRate: number) {
-  if (fromRate === toRate) return input;
-  const ratio = fromRate / toRate;
-  const length = Math.max(1, Math.floor(input.length / ratio));
-  const out = new Float32Array(length);
-  for (let i = 0; i < length; i++) {
-    const start = Math.floor(i * ratio);
-    const end = Math.min(input.length, Math.floor((i + 1) * ratio));
-    let sum = 0;
-    for (let j = start; j < end; j++) sum += input[j] ?? 0;
-    out[i] = sum / Math.max(1, end - start);
-  }
-  return out;
-}
-
-function encodeWav(input: Float32Array, fromRate: number, toRate: number): Uint8Array {
-  const samples = downsample(input, fromRate, toRate);
-  const pcm = new Int16Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i] ?? 0));
-    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  const buffer = new ArrayBuffer(44 + pcm.length * 2);
-  const view = new DataView(buffer);
-  const write = (offset: number, text: string) => {
-    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
-  };
-  write(0, "RIFF");
-  view.setUint32(4, 36 + pcm.length * 2, true);
-  write(8, "WAVE");
-  write(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, toRate, true);
-  view.setUint32(28, toRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  write(36, "data");
-  view.setUint32(40, pcm.length * 2, true);
-  new Uint8Array(buffer, 44).set(new Uint8Array(pcm.buffer));
-  return new Uint8Array(buffer);
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }

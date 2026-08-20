@@ -58,6 +58,9 @@ export function useMicLevels(
           unlisteners.push(
             await onMicLevel((next: MicLevel) => {
               pushLevel(next.level, next.bands);
+              // In listenOnly mode nothing opens the stream here, but the level
+              // events still name the device that is actually open.
+              if (next.device) setOpenedDevice(next.device);
             }),
           );
           unlisteners.push(await onMicError(setError));

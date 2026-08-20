@@ -93,6 +93,31 @@ fn audio_stop_levels(state: State<'_, Pointy>) {
     state.audio.stop_levels();
 }
 
+/// Start a dictation session: `mic://level` for the visualisers plus a rolling
+/// WAV drained by `audio_snapshot_record` / `audio_stop_record`. This is the only
+/// capture Pointy ever opens — the webview no longer touches the device itself.
+#[tauri::command]
+fn audio_start_record(
+    app: AppHandle,
+    state: State<'_, Pointy>,
+    device: Option<String>,
+) -> Result<String, String> {
+    state.audio.start_record(app.clone(), device)
+}
+
+/// Stop the dictation and return the WAV of the hold (base64, mono 16 kHz).
+/// Empty when the session was already closed (e.g. by the cap watchdog).
+#[tauri::command]
+fn audio_stop_record(state: State<'_, Pointy>) -> Result<String, String> {
+    state.audio.stop_record()
+}
+
+/// WAV of the audio captured so far, without stopping — for interim transcription.
+#[tauri::command]
+fn audio_snapshot_record(state: State<'_, Pointy>) -> Result<String, String> {
+    state.audio.snapshot_record()
+}
+
 #[tauri::command]
 fn audio_current_device(state: State<'_, Pointy>) -> Option<String> {
     state.audio.current_device()
@@ -181,7 +206,7 @@ fn models_ready() -> bool {
 fn settings_reset(app: AppHandle, state: State<'_, Pointy>) -> Result<Settings, String> {
     state.hotkey.disarm();
     hotkey::unregister_os_shortcuts(&app);
-    state.audio.stop_levels();
+    state.audio.release_all("settings reset");
     overlay::set_enabled(&app, false);
     let settings = Settings::default();
     settings::save(&app, &settings)?;
@@ -642,6 +667,9 @@ pub fn run() {
             audio_input_devices,
             audio_start_levels,
             audio_stop_levels,
+            audio_start_record,
+            audio_stop_record,
+            audio_snapshot_record,
             audio_current_device,
             hotkey_start_capture,
             hotkey_stop_capture,

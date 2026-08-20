@@ -265,9 +265,13 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
         { name: "Headset Microphone", is_default: false },
       ] as T;
     case "audio_start_levels":
+    case "audio_start_record":
       return ((args?.device as string | null) ?? "Default Microphone") as T;
     case "audio_stop_levels":
       return undefined as T;
+    case "audio_stop_record":
+    case "audio_snapshot_record":
+      return "" as T;
     case "hotkey_start_capture":
     case "hotkey_stop_capture":
       return undefined as T;
@@ -404,6 +408,15 @@ export const audioInputDevices = () => invoke<AudioDevice[]>("audio_input_device
 export const audioStartLevels = (device?: string | null) =>
   invoke<string>("audio_start_levels", { device: device ?? null });
 export const audioStopLevels = () => invoke<void>("audio_stop_levels");
+
+// Dictation: Rust owns the only capture stream. The webview never opens the
+// device itself — it starts/stops the shared session and reads the WAV back.
+export const audioStartRecord = (device?: string | null) =>
+  invoke<string>("audio_start_record", { device: device ?? null });
+/** Stop the dictation and return the WAV of the hold (base64, mono 16 kHz). */
+export const audioStopRecord = () => invoke<string>("audio_stop_record");
+/** WAV of the audio so far, without stopping — for interim transcription. */
+export const audioSnapshotRecord = () => invoke<string>("audio_snapshot_record");
 
 // hotkey
 export const hotkeyStartCapture = () => invoke<void>("hotkey_start_capture");
@@ -564,6 +577,9 @@ export const onMicLevel = (cb: (level: MicLevel) => void): Promise<UnlistenFn> =
   listen<MicLevel>("mic://level", (event) => cb(event.payload));
 export const onMicError = (cb: (reason: string) => void): Promise<UnlistenFn> =>
   listen<string>("mic://error", (event) => cb(event.payload));
+/** The backend force-closed the dictation (hard cap reached); the WAV is gone. */
+export const onMicStopped = (cb: (reason: string) => void): Promise<UnlistenFn> =>
+  listen<string>("mic://stopped", (event) => cb(event.payload));
 export const onModelProgress = (cb: (progress: ModelProgress) => void): Promise<UnlistenFn> =>
   listen<ModelProgress>("models://progress", (event) => cb(event.payload));
 

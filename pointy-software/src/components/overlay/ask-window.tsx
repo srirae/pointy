@@ -64,6 +64,7 @@ export function AskWindow({
   onRefreshWindows,
   onChangeApp,
   turns,
+  latestTurnId,
   draft,
   onDraftChange,
   onSend,
@@ -97,6 +98,8 @@ export function AskWindow({
   onClose,
   headerProps,
 }: {
+  /** Id of the newest turn; only it may still "point" at the live screen. */
+  latestTurnId: number | null;
   picking: boolean;
   scope: AppWindow | null;
   scopeChosen: boolean;
@@ -295,6 +298,7 @@ export function AskWindow({
               <TurnBlock
                 key={turn.id}
                 turn={turn}
+                latest={turn.id === latestTurnId}
                 busy={busy}
                 pointed={pointedTurn === turn.id}
                 locating={locatingTurn === turn.id}
@@ -447,6 +451,7 @@ export function AskWindow({
 
 function TurnBlock({
   turn,
+  latest,
   busy,
   pointed,
   locating,
@@ -459,6 +464,8 @@ function TurnBlock({
   onListen,
 }: {
   turn: Turn;
+  /** True for the newest turn, whose target still matches the live screen. */
+  latest: boolean;
   busy: boolean;
   pointed: boolean;
   locating: boolean;
@@ -521,7 +528,7 @@ function TurnBlock({
 
         {!asking && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {turn.status === "done" && turn.target && (
+            {latest && turn.status === "done" && turn.target && (
               <button
                 type="button"
                 onClick={() => onTogglePoint(turn)}

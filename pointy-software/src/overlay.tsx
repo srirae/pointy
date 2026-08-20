@@ -441,6 +441,7 @@ export function Overlay() {
     dictating.current = true;
     setListenGen((n) => n + 1);
     setListening(true);
+    voice.clearError();
   }, []);
 
   /**
@@ -729,6 +730,17 @@ export function Overlay() {
     };
   }, []);
 
+  // Release the microphone the moment the overlay loses focus — switching apps
+  // mid-hold must not leave the device held. The hotkey-up path and Rust's hard
+  // cap cover every other way a session could linger.
+  useEffect(() => {
+    const onBlur = () => {
+      if (live.current.listening) void stopListening();
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [stopListening]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -843,10 +855,12 @@ export function Overlay() {
                 onRefreshWindows={loadWindows}
                 onChangeApp={changeApp}
                 turns={turns}
+                latestTurnId={turns.length > 0 ? turns[turns.length - 1].id : null}
                 draft={draft}
                 onDraftChange={(value) => {
                   // Typing takes over from dictation instead of fighting it.
                   dictating.current = false;
+                  voice.clearError();
                   if (live.current.listening) void stopListening(false);
                   setDraft(value);
                 }}
@@ -859,7 +873,7 @@ export function Overlay() {
                   if (listening) void stopListening();
                   else startListening();
                 }}
-                micError={voice.error}
+                micError={draft ? null : voice.error}
                 onEdit={edit}
                 onRetry={retry}
                 pointedTurn={point?.turnId ?? null}
