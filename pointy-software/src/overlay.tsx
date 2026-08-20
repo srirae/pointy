@@ -9,6 +9,7 @@ import {
   onHotkeyUp,
   onOverlayHidden,
   overlayHide,
+  overlayHeartbeat,
   overlaySetHitRect,
   guideStart,
   guideStop,
@@ -168,10 +169,22 @@ export function Overlay() {
 
   // Clicks land on the app underneath except over the card. Kept on while Pointy
   // is thinking, so the screen never freezes mid-answer.
-  const passthrough = open && !listening && !leaving && !menuOpen;
+  //
+  // The `!open` arm matters more than it looks: swallowing every click is only
+  // ever justified by a live session. Asking for it while closed is what left a
+  // reloaded webview — which always mounts closed — holding the whole desktop.
+  const passthrough = !open || (!listening && !leaving && !menuOpen);
   useEffect(() => {
     void overlaySetPassthrough(passthrough);
   }, [passthrough]);
+
+  // Proof of life for the backend watchdog. If this webview reloads, crashes or
+  // wedges, the beat stops and Rust gives the mouse back without it.
+  useEffect(() => {
+    void overlayHeartbeat();
+    const timer = window.setInterval(() => void overlayHeartbeat(), 400);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!open || leaving) return;

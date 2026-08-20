@@ -326,6 +326,7 @@ function previewInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     case "overlay_hide":
     case "overlay_set_passthrough":
     case "overlay_set_hit_rect":
+    case "overlay_heartbeat":
       return undefined as T;
     case "windows_list":
       return [
@@ -453,6 +454,9 @@ export const overlaySetPassthrough = (enabled: boolean) =>
   invoke<void>("overlay_set_passthrough", { enabled });
 export const overlaySetHitRect = (rect: { x: number; y: number; w: number; h: number }) =>
   invoke<void>("overlay_set_hit_rect", { rect });
+/** Proof the overlay webview is still running, so the backend can hand the mouse
+ * back on its own if this stops. */
+export const overlayHeartbeat = () => invoke<void>("overlay_heartbeat");
 export const windowsList = () => invoke<AppWindow[]>("windows_list");
 export const windowFocus = (id: number) => invoke<void>("window_focus", { id });
 export const captureScope = (windowId?: number | null) =>

@@ -201,6 +201,13 @@ fn overlay_hide(app: AppHandle) {
     overlay::hide(&app);
 }
 
+/// The overlay webview's proof of life. If these stop arriving while the overlay
+/// is holding the mouse, the backend gives the desktop back on its own.
+#[tauri::command]
+fn overlay_heartbeat() {
+    overlay::heartbeat();
+}
+
 /// Main-thread wake — the dashboard calls this so Windows actually shows the overlay.
 #[tauri::command]
 fn overlay_wake(app: AppHandle) {
@@ -653,6 +660,7 @@ pub fn run() {
             overlay_rest,
             overlay_set_passthrough,
             overlay_set_hit_rect,
+            overlay_heartbeat,
             ask_screen,
             locate_target,
             point_watch,

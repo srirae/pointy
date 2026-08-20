@@ -7,7 +7,7 @@
 //! After the hotkey is released, the frost drops and the overlay becomes click-through
 //! so the user can keep working. Hits on the Guide-Dot / answer card still land on Pointy.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -25,6 +25,32 @@ static OVERLAY_OWNED_MIC: AtomicBool = AtomicBool::new(false);
 static PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 static LAST_IGNORE: AtomicBool = AtomicBool::new(false);
 static POLL_STARTED: AtomicBool = AtomicBool::new(false);
+/// Tracked rather than queried so the watchdog never has to touch the window
+/// from the poll thread.
+static VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Last time the overlay webview said it was alive, and when it started holding
+/// the mouse. Both are Unix milliseconds; 0 means "not set".
+static LAST_BEAT: AtomicU64 = AtomicU64::new(0);
+static EXCLUSIVE_SINCE: AtomicU64 = AtomicU64::new(0);
+
+/// While the overlay is swallowing every click, the webview has to keep proving
+/// it is alive. A reload, a crash or a wedged render loop stops the beat, and the
+/// watchdog then hands the desktop straight back.
+const BEAT_GRACE_MS: u64 = 1_200;
+/// A hard ceiling for a live-but-stuck webview. Dictation is capped at 20s, so
+/// nothing legitimate holds the mouse this long.
+const EXCLUSIVE_CEILING_MS: u64 = 30_000;
+
+fn now_ms() -> u64 {
+    crate::events::now_millis() as u64
+}
+
+/// The overlay webview checks in on a timer. This is the signal the watchdog
+/// waits on: if it stops arriving, the click-through is restored without the
+/// webview being involved at all.
+pub fn heartbeat() {
+    LAST_BEAT.store(now_ms(), Ordering::SeqCst);
+}
 
 /// Logical CSS pixels of the interactive pill, relative to the overlay webview.
 #[derive(Clone, Copy, Default)]
@@ -78,6 +104,9 @@ pub fn begin_listen(app: &AppHandle) {
         return;
     }
 
+    // Credit a full grace window up front: the webview needs a moment to mount
+    // and start beating, and a slow first frame must not look like a crash.
+    heartbeat();
     set_passthrough(app, false);
     remember_foreground();
 
@@ -146,6 +175,7 @@ pub fn focus_app_window(id: u32) {
 
 /// Hide the overlay without emitting `overlay://hidden` or wiping the wake session.
 fn conceal_for_capture(app: &AppHandle) {
+    VISIBLE.store(false, Ordering::SeqCst);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = window(&handle) {
@@ -167,12 +197,25 @@ pub fn end_listen(app: &AppHandle) {
 /// Let the user keep working: clicks pass through except on the Guide-Dot / card.
 pub fn set_passthrough(app: &AppHandle, enabled: bool) {
     let was = PASSTHROUGH.swap(enabled, Ordering::SeqCst);
-    if enabled && !was {
-        restore_foreground();
+    if enabled {
+        EXCLUSIVE_SINCE.store(0, Ordering::SeqCst);
+        if !was {
+            restore_foreground();
+        }
         apply_ignore(app, true);
+        return;
     }
-    if !enabled {
-        apply_ignore(app, false);
+    // Start the clock on the first request only, so repeated calls cannot keep
+    // pushing the ceiling out.
+    let _ = EXCLUSIVE_SINCE.compare_exchange(0, now_ms(), Ordering::SeqCst, Ordering::SeqCst);
+    apply_ignore(app, false);
+}
+
+/// Forget where the card was. A rect left behind by a webview that is no longer
+/// drawing would otherwise keep swallowing clicks over an empty patch of screen.
+fn clear_hit() {
+    if let Ok(mut hit) = HIT.lock() {
+        *hit = HitRect::default();
     }
 }
 
@@ -193,7 +236,10 @@ pub fn show_fullscreen(app: &AppHandle) {
 }
 
 pub fn hide(app: &AppHandle) {
+    VISIBLE.store(false, Ordering::SeqCst);
     PASSTHROUGH.store(false, Ordering::SeqCst);
+    EXCLUSIVE_SINCE.store(0, Ordering::SeqCst);
+    clear_hit();
     apply_ignore(app, false);
     if let Some(state) = app.try_state::<Pointy>() {
         state.audio.stop_levels();
@@ -222,7 +268,9 @@ fn show_fullscreen_now(app: &AppHandle) {
     let _ = window.unminimize();
     if let Err(err) = window.show() {
         eprintln!("[pointy] overlay show failed: {err}");
+        return;
     }
+    VISIBLE.store(true, Ordering::SeqCst);
     if !PASSTHROUGH.load(Ordering::SeqCst) {
         let _ = window.set_focus();
     }
@@ -260,6 +308,13 @@ fn apply_ignore(app: &AppHandle, ignore: bool) {
     if LAST_IGNORE.swap(ignore, Ordering::SeqCst) == ignore {
         return;
     }
+    push_ignore(app, ignore);
+}
+
+/// Set the window flag whatever the cached state says. The watchdog uses this so
+/// a stale `LAST_IGNORE` can never be the reason the desktop stays blocked.
+fn push_ignore(app: &AppHandle, ignore: bool) {
+    LAST_IGNORE.store(ignore, Ordering::SeqCst);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = window(&handle) {
@@ -277,13 +332,50 @@ fn start_passthrough_poll(app: &AppHandle) {
         .name("pointy-passthrough".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(16));
-            if !PASSTHROUGH.load(Ordering::SeqCst) {
+            if PASSTHROUGH.load(Ordering::SeqCst) {
+                let over_pill = cursor_over_hit(&handle);
+                apply_ignore(&handle, !over_pill);
                 continue;
             }
-            let over_pill = cursor_over_hit(&handle);
-            apply_ignore(&handle, !over_pill);
+            // Exclusive: every click on every monitor is landing on Pointy. This
+            // is the only state that can make the machine feel frozen, so it is
+            // never allowed to outlive the thing that asked for it.
+            if let Some(reason) = overdue() {
+                rescue(&handle, reason);
+            }
         })
         .ok();
+}
+
+/// Why the overlay should stop holding the mouse, if it should.
+fn overdue() -> Option<&'static str> {
+    if !VISIBLE.load(Ordering::SeqCst) {
+        return None;
+    }
+    let now = now_ms();
+
+    let beat = LAST_BEAT.load(Ordering::SeqCst);
+    if beat == 0 || now.saturating_sub(beat) > BEAT_GRACE_MS {
+        return Some("the overlay webview stopped answering");
+    }
+
+    let since = EXCLUSIVE_SINCE.load(Ordering::SeqCst);
+    if since != 0 && now.saturating_sub(since) > EXCLUSIVE_CEILING_MS {
+        return Some("it held the mouse longer than any dictation should");
+    }
+    None
+}
+
+/// Hand the desktop back. Flipping `PASSTHROUGH` means this runs once per
+/// episode rather than every tick, and `push_ignore` bypasses the dedupe cache
+/// so the window flag is set even if it already believes it is click-through.
+fn rescue(app: &AppHandle, reason: &str) {
+    eprintln!("[pointy] releasing the mouse — {reason}");
+    PASSTHROUGH.store(true, Ordering::SeqCst);
+    EXCLUSIVE_SINCE.store(0, Ordering::SeqCst);
+    clear_hit();
+    push_ignore(app, true);
+    restore_foreground();
 }
 
 fn cursor_over_hit(app: &AppHandle) -> bool {
